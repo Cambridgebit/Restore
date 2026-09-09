@@ -148,7 +148,9 @@ def test_bicubic_eval_only_smoke(biosr_root, manifest, tmp_path):
 
 
 def test_visualization_smoke(biosr_root, manifest, tmp_path):
-    """vis_every=1 -> LR-up|SR|GT panels: 2 test samples per level + 1 per seen structure."""
+    """vis_every=1 -> grayscale panels: 2 test samples per level + 1 per seen structure."""
+    import tifffile
+
     from train import run_training
 
     cfg = _make_cfg(biosr_root, tmp_path)
@@ -159,7 +161,10 @@ def test_visualization_smoke(biosr_root, manifest, tmp_path):
     for epoch in ("0000", "0001"):
         panels = list((run_dir / "vis" / f"epoch_{epoch}").glob("*.tif"))
         assert len(panels) == 5
-        assert all(panel.stat().st_size > 0 for panel in panels)
+        for panel in panels:
+            stack = tifffile.imread(panel)  # 3 grayscale pages, NOT an RGB composite
+            assert stack.ndim == 3 and stack.shape[0] == 3
+            assert 0.0 <= float(stack.min()) and float(stack.max()) <= 1.0
 
 
 def test_wandb_missing_package_is_graceful(biosr_root, manifest, tmp_path):

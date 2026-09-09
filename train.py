@@ -238,16 +238,16 @@ def _visualize(
             lr_up = F.interpolate(
                 lr_img.unsqueeze(0), size=sr.shape[-2:], mode="bicubic", align_corners=False, antialias=True
             )
-            panel = torch.cat([lr_up, sr, gt_img.unsqueeze(0)], dim=1).squeeze(0).numpy()  # (3, H, W)
-            panel = np.clip(panel, 0.0, 1.0)
+            stack = torch.cat([lr_up, sr, gt_img.unsqueeze(0)], dim=1).squeeze(0).numpy()  # (3, H, W)
+            stack = np.clip(stack, 0.0, 1.0)
             tifffile.imwrite(
                 vis_dir / f"{sample.id.replace('/', '__')}.tif",
-                panel,
+                stack,
                 photometric="minisblack",
                 planarconfig="separate",
                 metadata={"axes": "CYX", "Description": f"epoch {epoch} | {tag} | {sample.id} | LR-up | SR | GT"},
             )
-            image = np.transpose(panel, (1, 2, 0))
+            image = np.hstack(stack)  # (H, 3W) grayscale strip: LR-up | SR | GT
             caption = f"{tag} | {sample.id} | LR-up | SR | GT"
             (unseen if tag.startswith("test/") else seen).append((image, caption))
     tracker.log_images(f"vis/unseen_{split.held_out}", unseen, step=epoch)
