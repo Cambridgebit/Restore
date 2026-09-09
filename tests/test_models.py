@@ -130,3 +130,63 @@ def test_bicubic_matches_plain_interpolation() -> None:
 def test_build_model_bicubic_entry() -> None:
     model = build_model({"name": "bicubic", "scale": 2})
     assert model(torch.rand(1, 1, 16, 16)).shape == (1, 1, 32, 32)
+
+
+def test_dfcan_fca_gates_not_saturated() -> None:
+    """FCA gates must stay in the sigmoid interior (no hard 0/1 saturation)."""
+    from src.models.dfcan import FCAB
+
+    torch.manual_seed(0)
+    model = DFCAN(nf=16, num_groups=1, num_blocks=2)
+    model.eval()
+    collected: list[torch.Tensor] = []
+    hooks = [
+        block.gate[-1].register_forward_hook(lambda m, i, o: collected.append(o.detach()))
+        for block in model.modules()
+        if isinstance(block, FCAB)
+    ]
+    try:
+        with torch.no_grad():
+            model(torch.rand(2, 1, 16, 16))
+        gates = torch.cat([g.flatten() for g in collected])
+        assert gates.numel() > 0
+        assert gates.min() > 0.01 and gates.max() < 0.99  # smooth interior, not bimodal {0, 1}
+    finally:
+        for hook in hooks:
+            hook.remove()
+
+
+def test_dfcan_fca_gates_scale_invariant() -> None:
+    """Gates must survive extreme input rescaling without saturating.
+
+    Conv biases break exact scale equivariance, so gates are not bit-identical
+    across scales - but the per-sample normalization must keep them inside the
+    sigmoid interior (pre-fix they collapsed to hard {0, 1} at large scales).
+    """
+    from src.models.dfcan import FCAB
+
+    torch.manual_seed(0)
+    model = DFCAN(nf=16, num_groups=1, num_blocks=2)
+    model.eval()
+    collected: list[torch.Tensor] = []
+    hooks = [
+        block.gate[-1].register_forward_hook(lambda m, i, o: collected.append(o.detach()))
+        for block in model.modules()
+        if isinstance(block, FCAB)
+    ]
+    try:
+        x = torch.rand(1, 1, 16, 16)
+
+        def collect(scale: float) -> torch.Tensor:
+            collected.clear()
+            with torch.no_grad():
+                model(x * scale)
+            return torch.cat([g.flatten() for g in collected])
+
+        base = collect(1.0)
+        scaled = collect(50.0)  # simulates a much larger spatial/feature amplitude scale
+        for gates in (base, scaled):
+            assert gates.min() > 0.01 and gates.max() < 0.99
+    finally:
+        for hook in hooks:
+            hook.remove()

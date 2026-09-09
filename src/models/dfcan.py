@@ -11,8 +11,15 @@ class FCAB(nn.Module):
     """Fourier Channel Attention block with a local residual connection.
 
     Path: 3x3 conv -> rFFT2 -> amplitude |spectrum|**gamma -> global max pool over
-    frequencies -> 1x1 MLP gate (sigmoid) -> gated amplitude with preserved phase
-    -> irFFT2 -> 3x3 conv. Output: x + path(x).
+    frequencies -> per-sample channel normalization (relative energy in [0, 1]) ->
+    1x1 MLP gate (sigmoid) -> gated amplitude with preserved phase -> irFFT2 ->
+    3x3 conv. Output: x + path(x).
+
+    The pooled-amplitude normalization is essential: raw FFT amplitudes scale with
+    the spatial size of the input, which saturates the sigmoid into hard 0/1 gates
+    (measured: gate std=0.50, bimodal) and degenerates the attention. Dividing by
+    the per-sample channel max keeps the gate input O(1) and scale-invariant, so
+    training-patch and inference-tile statistics agree.
     """
 
     def __init__(self, nf: int, gamma: float = 1.0) -> None:
@@ -35,7 +42,9 @@ class FCAB(nn.Module):
         spectrum = torch.fft.rfft2(feat)
         amplitude = spectrum.abs() ** self.gamma
         phase = torch.atan2(spectrum.imag, spectrum.real)
-        gate = self.gate(amplitude.amax(dim=(-2, -1), keepdim=True))
+        pooled = amplitude.amax(dim=(-2, -1), keepdim=True)
+        pooled = pooled / pooled.amax(dim=1, keepdim=True).clamp_min(1e-12)
+        gate = self.gate(pooled)
         feat = torch.fft.irfft2(torch.polar(amplitude * gate, phase), s=(height, width))
         return x + self.out_conv(feat)
 
