@@ -109,3 +109,24 @@ def test_deterministic_build_and_forward() -> None:
     torch.manual_seed(0)
     rebuilt = DFCAN(**DFCAN_KW).eval()
     assert torch.equal(rebuilt(x), model(x))
+
+
+def test_bicubic_forward_shape_odd_input() -> None:
+    from src.models import BicubicSR
+
+    model = BicubicSR(in_channels=1, scale=2)
+    assert model(torch.rand(2, 1, 16, 16)).shape == (2, 1, 32, 32)
+    assert model(torch.rand(1, 1, 15, 15)).shape == (1, 1, 30, 30)
+
+
+def test_bicubic_matches_plain_interpolation() -> None:
+    from src.models import BicubicSR
+
+    x = torch.rand(1, 1, 16, 16)
+    reference = F.interpolate(x, scale_factor=2, mode="bicubic", align_corners=False, antialias=True)
+    assert torch.allclose(BicubicSR()(x), reference)
+
+
+def test_build_model_bicubic_entry() -> None:
+    model = build_model({"name": "bicubic", "scale": 2})
+    assert model(torch.rand(1, 1, 16, 16)).shape == (1, 1, 32, 32)
