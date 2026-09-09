@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.codegraph/
+
+# Experiment outputs
+runs/
+
+# Environments
+.venv/

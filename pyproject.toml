@@ -1,0 +1,24 @@
+[project]
+name = "restore"
+version = "0.1.0"
+description = "Structure-generalizable microscopy super-resolution (BioSR, leave-one-structure-out) framework"
+requires-python = ">=3.12"
+
+# NOTE: no dependencies declared here on purpose.
+# This project reuses the sibling environment at ../SuperRestore/.venv
+# (python 3.12, torch, numpy, tifffile, pyyaml, pytest, tqdm). Run tests with:
+#   ../SuperRestore/.venv/bin/python -m pytest
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["slow: long-running tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = ["E501"]
