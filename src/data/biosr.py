@@ -86,10 +86,11 @@ def resolve_root(root: str | Path | None) -> Path:
     not an existing directory.
     """
     if root is not None:
-        resolved = Path(root)
+        resolved = Path(root).expanduser()
     else:
         env = os.environ.get("BIOSR_ROOT")
-        resolved = Path(env) if env else DEFAULT_BIOSR_ROOT
+        resolved = Path(env).expanduser() if env else DEFAULT_BIOSR_ROOT
+    resolved = resolved.resolve()
     if not resolved.is_dir():
         raise FileNotFoundError(
             f"BioSR data root not found: {resolved} "
@@ -119,9 +120,7 @@ def discover_samples(
 
     Returns samples sorted by (structure, cell, level) with ``split=None``.
     """
-    root_path = Path(root)
-    if not root_path.is_dir():
-        raise FileNotFoundError(f"BioSR data root not found: {root_path} (set BIOSR_ROOT or pass root explicitly)")
+    root_path = resolve_root(root)
     whitelist = set(structures) if structures is not None else None
 
     samples: list[BioSRSample] = []

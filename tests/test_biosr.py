@@ -83,6 +83,18 @@ def test_structures_whitelist(biosr_root):
     assert {sample.structure for sample in samples} == {"CCPs"}
 
 
+def test_discover_resolves_env_root(biosr_root, monkeypatch):
+    monkeypatch.setenv("BIOSR_ROOT", str(biosr_root))
+    samples = discover_samples(None)
+    assert len(samples) == 14
+
+
+def test_discover_resolves_relative_root(biosr_root, monkeypatch):
+    monkeypatch.chdir(biosr_root.parent)  # cwd where "BioSR" is a relative path
+    samples = discover_samples("BioSR")
+    assert len(samples) == 14
+
+
 def test_keep_incomplete_includes_gtless(biosr_root):
     samples = discover_samples(biosr_root, keep_incomplete=True)
     assert len(samples) == 16
