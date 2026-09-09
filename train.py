@@ -113,6 +113,7 @@ def _run_validation(
     seen = 0
     for lr_img, gt in loader:
         sr = model(lr_img.to(device))
+        gt = gt.to(device)
         batch = sr.shape[0]
         psnr_sum += psnr(sr, gt) * batch
         ssim_sum += ssim(sr, gt, window=ssim_window) * batch

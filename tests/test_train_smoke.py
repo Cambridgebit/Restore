@@ -6,6 +6,12 @@ import math
 import pytest
 
 
+def _cuda_available() -> bool:
+    import torch
+
+    return torch.cuda.is_available()
+
+
 def _make_cfg(biosr_root, tmp_path) -> dict:
     return {
         "dataset": {
@@ -100,3 +106,25 @@ def test_morphology_ood_raises(biosr_root, manifest, tmp_path):
     cfg["augmentation"]["morphology_ood"] = True
     with pytest.raises(NotImplementedError, match="morphology-OOD"):
         run_training(cfg, run_dir=tmp_path / "run_ood")
+
+
+@pytest.mark.skipif(not _cuda_available(), reason="CUDA not available")
+def test_run_validation_on_cuda(biosr_root, manifest, tmp_path):
+    """Validation metrics must not mix devices: gt moves to the model's device."""
+    import math
+
+    import torch
+    from torch.utils.data import DataLoader
+
+    from src.data.biosr import BioSRDataset
+    from train import _run_validation, build_split
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    split = build_split(cfg)
+    val_ds = BioSRDataset(split.val, root=biosr_root, patch_size=16, crop_mode="center")
+    loader = DataLoader(val_ds, batch_size=2, shuffle=False)
+    device = torch.device("cuda")
+    model = torch.nn.UpsamplingBilinear2d(scale_factor=2).to(device)
+    val_psnr, val_ssim = _run_validation(model, loader, device, cfg["eval"]["ssim_window"])
+    assert math.isfinite(val_psnr)
+    assert math.isfinite(val_ssim)
