@@ -237,7 +237,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     )
 
     model = build_model(cfg["model"]).to(device)
-    loss_fn = build_loss(cfg["loss"])
+    loss_fn = build_loss(cfg["loss"]).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=cfg["training"]["learning_rate"],
