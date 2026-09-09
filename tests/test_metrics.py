@@ -21,6 +21,15 @@ def test_psnr_identical_inputs_is_large_finite() -> None:
     assert value > 60.0  # floored mse 1e-12 -> 120 dB
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_ssim_metric_on_cuda_inputs() -> None:
+    """SSIM machinery must build its kernel on the input device."""
+    x = torch.rand(1, 1, 32, 32, device="cuda")
+    assert ssim(x, x, window=11) == pytest.approx(1.0, abs=1e-5)
+    assert math.isfinite(psnr(x, x))
+    assert math.isfinite(zncc(x, x))
+
+
 def test_psnr_decreases_with_noise() -> None:
     x = torch.rand(1, 1, 64, 64)
     values = [
