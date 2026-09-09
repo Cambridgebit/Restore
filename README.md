@@ -71,6 +71,17 @@ structures and tests on the unseen fourth:
 
 ## Training
 
+Full LOSO suite (4 folds x backbones, plus ablation/bicubic modes) via one script:
+
+```bash
+export BIOSR_ROOT=/abs/path/to/BioSR
+bash scripts/run_loso.sh core       # 4 folds x {dfcan, rcan}
+bash scripts/run_loso.sh ablation   # + gradient-off / + fourier (run core first)
+bash scripts/run_loso.sh bicubic    # reference floor, eval only (epochs=0)
+```
+
+Single runs:
+
 ```bash
 # Fold 1 (default in configs/*.yaml)
 $PY train.py --config configs/dfcan.yaml
