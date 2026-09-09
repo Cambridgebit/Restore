@@ -239,10 +239,17 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
 
     model = build_model(cfg["model"]).to(device)
     loss_fn = build_loss(cfg["loss"]).to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=cfg["training"]["learning_rate"],
-        weight_decay=cfg["training"]["weight_decay"],
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if cfg["training"]["epochs"] > 0 and not trainable:
+        raise ValueError("no trainable parameters; an epochs>0 run requires a learning-based model")
+    optimizer = (
+        torch.optim.Adam(
+            trainable,
+            lr=cfg["training"]["learning_rate"],
+            weight_decay=cfg["training"]["weight_decay"],
+        )
+        if trainable
+        else None
     )
     grad_clip = cfg["training"].get("grad_clip")
 

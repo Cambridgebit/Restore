@@ -128,3 +128,20 @@ def test_run_validation_on_cuda(biosr_root, manifest, tmp_path):
     val_psnr, val_ssim = _run_validation(model, loader, device, cfg["eval"]["ssim_window"])
     assert math.isfinite(val_psnr)
     assert math.isfinite(val_ssim)
+
+
+def test_bicubic_eval_only_smoke(biosr_root, manifest, tmp_path):
+    """epochs=0 + bicubic: no training, straight to the standard held-out evaluation."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["model"] = {"name": "bicubic", "scale": 2}
+    cfg["training"]["epochs"] = 0
+    run_dir = tmp_path / "run_bicubic"
+    summary = run_training(cfg, run_dir=run_dir)
+
+    level5 = summary["test"]["per_level"]["5"]
+    assert level5["n"] == 2
+    for key in ("psnr", "ssim", "structural_precision", "structural_recall"):
+        assert math.isfinite(level5[key]["mean"])
+    assert (run_dir / "results" / "test_metrics.json").is_file()
