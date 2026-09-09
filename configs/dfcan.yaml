@@ -1,0 +1,49 @@
+dataset:
+  root: null                # null -> $BIOSR_ROOT -> protocol default (resolved in code)
+  scale: 2
+  structures: [CCPs, ER, Microtubules, F-actin]
+  held_out_structure: CCPs  # Fold 1; fold_2 ER, fold_3 Microtubules, fold_4 F-actin (src.data.splits.LOSO_FOLDS)
+  signal_levels: all        # "all" or list of ints
+  patch_size: 32            # LR patch; HR crop = 64
+  normalization: per_image_minmax
+model:
+  name: dfcan
+  nf: 64
+  num_groups: 4
+  num_blocks: 10
+  scale: 2
+  gamma: 1.0
+  residual_prediction: true
+training:
+  seed: 42
+  batch_size: 16
+  learning_rate: 1.0e-4
+  epochs: 300
+  num_workers: 4
+  val_fraction: 0.1
+  val_every: 1
+  weight_decay: 0.0
+  grad_clip: null
+  device: auto
+loss:
+  charbonnier: 1.0
+  ssim: 0.1
+  gradient: 0.1
+  fourier: 0.0
+  charbonnier_eps: 1.0e-3
+  ssim_window: 11
+augmentation:
+  hflip: true
+  vflip: true
+  rot90: true
+  intensity_range: [0.9, 1.1]
+  noise_max_sigma: 0.0
+  morphology_ood: false
+eval:
+  tile: 256
+  overlap: 32
+  edge_percentile: 99.0
+  tolerance_px: 2
+  frc_threshold: 0.14285714285714285   # 1/7-bit criterion
+  ssim_window: 11
+output_dir: runs
