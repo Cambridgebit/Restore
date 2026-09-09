@@ -9,16 +9,16 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 
-def _gaussian_kernel(window: int, sigma: float) -> Tensor:
-    """Return a normalized 1D gaussian kernel of length `window`."""
-    coords = torch.arange(window, dtype=torch.float32) - (window - 1) / 2.0
+def _gaussian_kernel(window: int, sigma: float, device=None, dtype=torch.float32) -> Tensor:
+    """Return a normalized 1D gaussian kernel of length `window` on `device`."""
+    coords = torch.arange(window, dtype=dtype, device=device) - (window - 1) / 2.0
     kernel = torch.exp(-(coords**2) / (2.0 * sigma**2))
     return kernel / kernel.sum()
 
 
-def _gaussian_kernel_2d(window: int, sigma: float) -> Tensor:
+def _gaussian_kernel_2d(window: int, sigma: float, device=None, dtype=torch.float32) -> Tensor:
     """Return a normalized 2D gaussian kernel with shape (1, 1, window, window)."""
-    kernel_1d = _gaussian_kernel(window, sigma)
+    kernel_1d = _gaussian_kernel(window, sigma, device=device, dtype=dtype)
     return (kernel_1d[:, None] * kernel_1d[None, :]).view(1, 1, window, window)
 
 
@@ -32,7 +32,7 @@ def ssim_components(
     """
     c1 = 0.01**2
     c2 = 0.03**2
-    kernel = _gaussian_kernel_2d(window, sigma)
+    kernel = _gaussian_kernel_2d(window, sigma, device=pred.device, dtype=pred.dtype)
     pad = window // 2
 
     mu_p = F.conv2d(pred, kernel, padding=pad)

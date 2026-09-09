@@ -20,6 +20,20 @@ def test_charbonnier_identical_inputs_equals_eps() -> None:
     assert loss.item() == pytest.approx(1e-3, rel=1e-6)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+def test_losses_run_on_cuda_inputs_with_cpu_module() -> None:
+    """Loss modules left on CPU must still work on CUDA tensors (device-aware internals)."""
+    x = torch.rand(2, 1, 16, 16, device="cuda")
+    y = torch.rand(2, 1, 16, 16, device="cuda")
+    for component in (CharbonnierLoss(), SSIMLoss(), GradientLoss(), FourierLoss()):
+        value = component(x, y)
+        assert torch.isfinite(value)
+    total, parts = build_loss({"charbonnier": 1.0, "ssim": 0.1, "gradient": 0.1, "fourier": 0.5})(x, y)
+    assert torch.isfinite(total)
+    for name, value in parts.items():
+        assert torch.isfinite(value), name
+
+
 def test_charbonnier_different_inputs_larger_and_finite() -> None:
     x = torch.rand(2, 1, 8, 8)
     y = torch.rand(2, 1, 8, 8)
