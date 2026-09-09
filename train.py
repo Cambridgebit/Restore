@@ -16,10 +16,13 @@ from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
+import tifffile
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from src.data.biosr import BioSRDataset, discover_samples, resolve_root
+from src.data.biosr import BioSRDataset, BioSRSample, discover_samples, resolve_root
 from src.data.sampling import make_balanced_sampler
 from src.data.splits import Split, check_no_leakage, filter_samples, make_loso_split
 from src.losses import build_loss
@@ -29,6 +32,12 @@ from src.utils.config import apply_overrides, load_config, save_config
 from src.utils.inference import predict_tiled
 from src.utils.run import append_jsonl, create_run_dir, save_checkpoint
 from src.utils.seed import seed_worker, set_seed
+from src.utils.tracking import WandbTracker
+
+try:
+    from tqdm import tqdm
+except ImportError:  # optional: progress bars degrade to plain iteration
+    tqdm = None
 
 REQUIRED_SECTIONS = ("dataset", "model", "training", "loss", "augmentation", "eval")
 _RECORD_METRICS = ("psnr", "ssim", "zncc", "frc", "precision", "recall", "f1")
@@ -176,6 +185,77 @@ def evaluate_split(
     return aggregate_results(records)
 
 
+def _select_vis_samples(split: Split) -> list[tuple[str, BioSRSample]]:
+    """Fixed visualization picks: 2 test samples per level + 1 sample per seen structure."""
+    picks: list[tuple[str, BioSRSample]] = []
+    by_level: dict[int, list[BioSRSample]] = {}
+    for sample in split.test:
+        by_level.setdefault(sample.level, []).append(sample)
+    for level in sorted(by_level):
+        for sample in by_level[level][:2]:
+            picks.append((f"test/level_{level:02d}", sample))
+    covered: set[str] = set()
+    for pool in (split.val, split.train):  # val first; train only fills structures val misses
+        for sample in pool:
+            if sample.structure not in covered:
+                covered.add(sample.structure)
+                picks.append((f"seen/{sample.structure}", sample))
+    return picks
+
+
+def _visualize(
+    model: torch.nn.Module,
+    split: Split,
+    root: str | Path,
+    cfg: dict,
+    device: torch.device,
+    epoch: int,
+    tracker: WandbTracker,
+    run_dir: Path,
+) -> None:
+    """Tiled inference on fixed samples; saves (LR-up | SR | GT) TIFFs and wandb panels.
+
+    The unseen (held-out) structure gets 2 samples per signal level; every seen
+    structure gets one sample (val preferred, train as fallback).
+    """
+    model.eval()
+    eval_cfg = cfg["eval"]
+    vis_dir = run_dir / "vis" / f"epoch_{epoch:04d}"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    unseen: list[tuple[np.ndarray, str]] = []
+    seen: list[tuple[np.ndarray, str]] = []
+    with torch.no_grad():
+        for tag, sample in _select_vis_samples(split):
+            dataset = BioSRDataset([sample], root=root)
+            lr_img, gt_img = dataset[0]
+            sr = predict_tiled(
+                model,
+                lr_img.unsqueeze(0).to(device),
+                tile=eval_cfg["tile"],
+                overlap=eval_cfg["overlap"],
+                scale=cfg["dataset"]["scale"],
+            ).cpu()
+            lr_up = F.interpolate(
+                lr_img.unsqueeze(0), size=sr.shape[-2:], mode="bicubic", align_corners=False, antialias=True
+            )
+            panel = torch.cat([lr_up, sr, gt_img.unsqueeze(0)], dim=1).squeeze(0).numpy()  # (3, H, W)
+            panel = np.clip(panel, 0.0, 1.0)
+            tifffile.imwrite(
+                vis_dir / f"{sample.id.replace('/', '__')}.tif",
+                panel,
+                photometric="minisblack",
+                planarconfig="separate",
+                metadata={"axes": "CYX", "Description": f"epoch {epoch} | {tag} | {sample.id} | LR-up | SR | GT"},
+            )
+            image = np.transpose(panel, (1, 2, 0))
+            caption = f"{tag} | {sample.id} | LR-up | SR | GT"
+            (unseen if tag.startswith("test/") else seen).append((image, caption))
+    tracker.log_images(f"vis/unseen_{split.held_out}", unseen, step=epoch)
+    tracker.log_images("vis/seen_structures", seen, step=epoch)
+    print(f"[vis] epoch {epoch}: {len(unseen) + len(seen)} panels -> {vis_dir}", flush=True)
+    model.train()
+
+
 def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     """Train per cfg; returns summary with best epoch, val metrics, and test aggregates."""
     cfg = copy.deepcopy(cfg)
@@ -197,6 +277,11 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         run_dir.mkdir(parents=True, exist_ok=True)
     save_config(cfg, run_dir / "config.yaml")
     split.save_json(run_dir / "split.json")
+    tracker = WandbTracker(
+        cfg,
+        run_dir=run_dir,
+        name=f"{cfg['model']['name']}_{cfg['dataset']['held_out_structure']}",
+    )
 
     aug = cfg["augmentation"]
     intensity_range = aug.get("intensity_range")
@@ -257,13 +342,22 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     best_val_psnr = float("-inf")
     best_val_ssim = float("-inf")
     log_path = run_dir / "logs" / "train_log.jsonl"
+    epochs_total = cfg["training"]["epochs"]
+    vis_every = cfg["training"].get("vis_every", 30)
+    if epochs_total > 0:
+        _visualize(model, split, root, cfg, device, 0, tracker, run_dir)  # baseline before training
 
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         model.train()
         part_sums: dict[str, float] = defaultdict(float)
         total_sum = 0.0
         seen = 0
-        for lr_img, gt in train_loader:
+        iterator = (
+            tqdm(train_loader, desc=f"epoch {epoch}/{epochs_total}", leave=False, ncols=110)
+            if tqdm is not None
+            else train_loader
+        )
+        for lr_img, gt in iterator:
             sr = model(lr_img.to(device))
             total, parts = loss_fn(sr, gt.to(device))
             total.backward()
@@ -276,6 +370,8 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             total_sum += total.item() * batch
             for name, value in parts.items():
                 part_sums[name] += value.item() * batch
+            if tqdm is not None:
+                iterator.set_postfix(loss=f"{total.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.1e}")
 
         record: dict = {
             "epoch": epoch,
@@ -302,6 +398,13 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             record["val_psnr"] = None
             record["val_ssim"] = None
         append_jsonl(log_path, record)
+        tracker.log_metrics(record, step=epoch)
+        progress = f"[epoch {epoch}/{epochs_total}] train_loss={record['train_loss']:.4f}"
+        if record.get("val_psnr") is not None:
+            progress += f"  val_psnr={record['val_psnr']:.2f}  val_ssim={record['val_ssim']:.3f}"
+        print(progress, flush=True)
+        if vis_every > 0 and (epoch % vis_every == 0 or epoch == epochs_total):
+            _visualize(model, split, root, cfg, device, epoch, tracker, run_dir)
         save_checkpoint(
             run_dir / "checkpoints" / "last.pt",
             model,
@@ -315,6 +418,18 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     results_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"held_out_structure": split.held_out, **test_results}
     results_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tracker.update_summary(
+        {
+            f"test/{name}": test_results["overall"][name]["mean"]
+            for name in ("psnr", "ssim", "zncc", "frc", *_AGGREGATE_NAMES.values())
+        }
+    )
+    tracker.finish()
+    print(
+        f"[done] best_epoch={best_epoch} best_val_psnr={best_val_psnr:.3f} "
+        f"test_overall_psnr={test_results['overall']['psnr']['mean']:.3f}",
+        flush=True,
+    )
 
     return {
         "run_dir": str(run_dir),

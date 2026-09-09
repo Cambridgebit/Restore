@@ -20,6 +20,12 @@ training:
   weight_decay: 0.0
   grad_clip: null
   device: auto
+  vis_every: 0              # eval-only reference: no periodic panels
+wandb:
+  enabled: false            # eval-only run: no tracking
+  entity: 2991837391-beihang-university
+  project: Restore
+  mode: online
 loss:
   charbonnier: 1.0          # unused (no training), kept for required config sections
   ssim: 0.1

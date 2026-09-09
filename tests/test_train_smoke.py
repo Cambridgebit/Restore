@@ -145,3 +145,29 @@ def test_bicubic_eval_only_smoke(biosr_root, manifest, tmp_path):
     for key in ("psnr", "ssim", "structural_precision", "structural_recall"):
         assert math.isfinite(level5[key]["mean"])
     assert (run_dir / "results" / "test_metrics.json").is_file()
+
+
+def test_visualization_smoke(biosr_root, manifest, tmp_path):
+    """vis_every=1 -> LR-up|SR|GT panels: 2 test samples per level + 1 per seen structure."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["training"]["vis_every"] = 1
+    run_dir = tmp_path / "run_vis"
+    run_training(cfg, run_dir=run_dir)
+    # held_out=F-actin: test level 5 -> 2 panels; seen: MT+CCPs (val), ER (train) -> 3 panels
+    for epoch in ("0000", "0001"):
+        panels = list((run_dir / "vis" / f"epoch_{epoch}").glob("*.tif"))
+        assert len(panels) == 5
+        assert all(panel.stat().st_size > 0 for panel in panels)
+
+
+def test_wandb_missing_package_is_graceful(biosr_root, manifest, tmp_path):
+    """wandb enabled=true must never break training (missing package -> warn + continue;
+    installed package -> offline run inside the run dir)."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["wandb"] = {"enabled": True, "entity": "unit", "project": "unit-test", "mode": "offline"}
+    summary = run_training(cfg, run_dir=tmp_path / "run_wandb")
+    assert math.isfinite(summary["best_val_psnr"])

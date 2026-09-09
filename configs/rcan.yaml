@@ -25,6 +25,12 @@ training:
   weight_decay: 0.0
   grad_clip: null
   device: auto
+  vis_every: 30             # periodic SR panels (0 = off); also runs once before training
+wandb:
+  enabled: true
+  entity: 2991837391-beihang-university
+  project: Restore
+  mode: online              # "offline" for air-gapped/local runs
 loss:
   charbonnier: 1.0
   ssim: 0.1

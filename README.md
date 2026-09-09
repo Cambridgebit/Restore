@@ -69,6 +69,23 @@ structures and tests on the unseen fourth:
 | fold_3 | Microtubules              | CCPs, ER, F-actin         |
 | fold_4 | F-actin                   | CCPs, ER, Microtubules    |
 
+## Tracking & progress
+
+Each run shows live progress: a tqdm bar per epoch in the terminal, a per-epoch
+summary line, and (when `wandb.enabled: true`) real-time curves and SR panels at
+`https://wandb.ai/<entity>/Restore`:
+
+- logged per epoch: `train_loss`, loss components, `val_psnr`, `val_ssim`, `lr`
+- every `training.vis_every` epochs (default 30, plus epoch 0): tiled inference
+  on fixed samples — 2 per signal level of the unseen structure + 1 per seen
+  structure — saved as `LR-up | SR | GT` TIFFs under `run_dir/vis/` and pushed
+  to wandb as image panels
+- final test metrics are attached to the wandb summary
+
+wandb is optional: without the package (or with `wandb.enabled: false`) training
+runs unchanged and logs only to stdout + `logs/train_log.jsonl`. Local runs
+without a wandb login can set `wandb.mode: offline`.
+
 ## Training
 
 Full LOSO suite (4 folds x backbones, plus ablation/bicubic modes) via one script:
