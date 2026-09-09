@@ -16,7 +16,7 @@ model:
   residual_prediction: true
 training:
   seed: 42
-  batch_size: 16
+  batch_size: 128
   learning_rate: 1.0e-4
   epochs: 300
   num_workers: 4
