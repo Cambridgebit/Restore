@@ -14,7 +14,7 @@ class CharbonnierLoss(nn.Module):
         super().__init__()
         self.eps = eps
 
-    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
-        """Return the scalar loss."""
+    def forward(self, pred: Tensor, target: Tensor, lr: Tensor | None = None) -> Tensor:
+        """Return the scalar loss; `lr` is accepted for interface parity and ignored."""
         diff = pred - target
         return torch.sqrt(diff * diff + self.eps * self.eps).mean()

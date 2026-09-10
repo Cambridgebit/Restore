@@ -26,6 +26,11 @@ training:
   grad_clip: 1.0            # global-norm clip; numerical safety for long unattended runs
   device: auto
   vis_every: 30             # periodic SR panels (0 = off); also runs once before training
+  select_metric: val_psnr   # val_psnr | val_ssim | val_f1 (structural) checkpoint selection
+  optimizer: adam           # adam | sam (sharpness-aware minimization)
+  sam_rho: 0.05             # SAM neighborhood radius (only used when optimizer=sam)
+  ema: false                # exponential moving average of weights (evaluated model)
+  ema_decay: 0.999
 wandb:
   enabled: true
   entity: 2991837391-beihang-university
@@ -36,6 +41,11 @@ loss:
   ssim: 0.1
   gradient: 0.1
   fourier: 0.0
+  data_consistency: 0.0     # ||downsample(SR) - LR||_1 (anti-hallucination)
+  residual: 0.0             # ||SR - bicubic(LR)||_1 (residual magnitude)
+  focal_frequency: 0.0      # focal frequency loss (thin structures)
+  gradient_variance: 0.0    # gradient-variance loss (anti-blur)
+  hessian: 0.0              # Hessian structureness loss (curvilinear continuity)
   charbonnier_eps: 1.0e-3
   ssim_window: 11
 augmentation:
@@ -44,7 +54,9 @@ augmentation:
   rot90: true
   intensity_range: [0.9, 1.1]
   noise_max_sigma: 0.0
-  morphology_ood: false
+  morphology_ood: false            # label-free synthetic morphology domain randomization
+  morphology_ood_samples: 2048     # number of synthetic (LR, HR) pairs added to training
+  morphology_ood_families: [filament, curve, ring, dot, voronoi, fractal]
 eval:
   tile: 256
   overlap: 32
@@ -52,4 +64,6 @@ eval:
   tolerance_px: 2
   frc_threshold: 0.14285714285714285   # 1/7-bit criterion
   ssim_window: 11
+  tta: false          # geometric self-ensemble at inference (8 dihedral views)
+  tta_mode: median    # median (thin structures) | mean
 output_dir: runs

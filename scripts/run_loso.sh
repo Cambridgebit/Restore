@@ -18,6 +18,12 @@
 #   EXTRA="training.epochs=100 ..."  extra overrides for every run
 #   SKIP_EXISTING=0                  force full rerun (default 1 = resume)
 #   PYTHON=/path/to/python           interpreter (default: python)
+#   GPU=1                            physical GPU index to train on (default 0),
+#                                    exported as CUDA_VISIBLE_DEVICES; run one
+#                                    suite per GPU to use both cards in parallel
+#   KILL_STALE=0                     do not terminate leftover train.py on this
+#                                    GPU (default 1 = terminate them first)
+#   LOCK_FILE=/path                  override the per-GPU lock path
 #
 # Long runs: nohup bash scripts/run_loso.sh core > train_core.log 2>&1 &
 set -uo pipefail
@@ -31,6 +37,54 @@ PY="${PYTHON:-python}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 EXTRA=(${EXTRA:-})
 FAILED=()
+
+# --- per-GPU single-instance + stale-process guard ---------------------------
+# Only one run_loso.sh may drive a given GPU: a second launch on the same GPU
+# refuses instead of stacking a parallel training run. Leftover train.py
+# processes on THIS GPU are terminated first (set KILL_STALE=0 to disable).
+GPU="${GPU:-0}"
+KILL_STALE="${KILL_STALE:-1}"
+LOCK_FILE="${LOCK_FILE:-/tmp/restore_loso_gpu${GPU}.lock}"
+export CUDA_VISIBLE_DEVICES="$GPU"
+
+gpu_pids() {
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  nvidia-smi -i "$GPU" --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null \
+    | tr -d ' ' | grep -E '^[0-9]+$' || true
+}
+
+kill_stale_training() {
+  # Terminate leftover train.py processes on THIS GPU only (never another GPU's).
+  local pid cmd
+  local -a targets=()
+  for pid in $(gpu_pids); do
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    [[ "$cmd" == *train.py* ]] && targets+=("$pid")
+  done
+  ((${#targets[@]})) || return 0
+  echo "!!! stale train.py on GPU$GPU -> terminating: ${targets[*]}" >&2
+  kill "${targets[@]}" 2>/dev/null || true
+  sleep 2
+  for pid in "${targets[@]}"; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "    still alive, SIGKILL $pid" >&2
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+acquire_lock() {
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "!!! flock not found (install util-linux); refusing to run without a single-instance guard." >&2
+    exit 1
+  fi
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    echo "!!! another run_loso.sh is already active on GPU$GPU (lock: $LOCK_FILE)." >&2
+    echo "    Use GPU=<other> for the second GPU, or wait for the current suite." >&2
+    exit 1
+  fi
+}
 
 cleanup_gpu() {
   # Belt-and-braces: the training process already released its CUDA context on
@@ -48,14 +102,14 @@ PYEOF
 }
 
 gpu_preflight() {
-  # Fail fast (before burning a startup cycle) when the GPU is mostly occupied
-  # by another process. Threshold overridable via MIN_GPU_FREE_MIB.
+  # Fail fast (before burning a startup cycle) when the selected GPU is mostly
+  # occupied by another process. Threshold overridable via MIN_GPU_FREE_MIB.
   command -v nvidia-smi >/dev/null 2>&1 || return 0
   local free_mib
-  free_mib="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1 | tr -d ' ')"
+  free_mib="$(nvidia-smi -i "$GPU" --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
   if (( free_mib < ${MIN_GPU_FREE_MIB:-6000} )); then
-    echo "!!! GPU has only ${free_mib} MiB free (< ${MIN_GPU_FREE_MIB:-6000}); another process is likely occupying it:" >&2
-    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+    echo "!!! GPU$GPU has only ${free_mib} MiB free (< ${MIN_GPU_FREE_MIB:-6000}); another process is likely occupying it:" >&2
+    nvidia-smi -i "$GPU" --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
     echo "    Free the GPU first (or set MIN_GPU_FREE_MIB=... lower) and rerun." >&2
     return 1
   fi
@@ -87,6 +141,12 @@ train() { # <config> <held_out> [overrides...]
   fi
   cleanup_gpu
 }
+
+echo "=== run_loso.sh | mode=$MODE | GPU=$GPU (CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES) ==="
+acquire_lock
+if [[ "$KILL_STALE" == 1 ]]; then
+  kill_stale_training
+fi
 
 case "$MODE" in
   core)

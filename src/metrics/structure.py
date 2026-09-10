@@ -16,7 +16,7 @@ def edge_map(img: Tensor, percentile: float = 99.0) -> Tensor:
     strictly greater than the threshold count as edges. Images with zero gradient
     everywhere yield empty edge maps.
     """
-    kernel_x = torch.tensor(_SOBEL_X).view(1, 1, 3, 3)
+    kernel_x = torch.tensor(_SOBEL_X, dtype=img.dtype, device=img.device).view(1, 1, 3, 3)
     kernel_y = kernel_x.transpose(-1, -2)
     padded = F.pad(img, (1, 1, 1, 1), mode="replicate")
     gx = F.conv2d(padded, kernel_x)

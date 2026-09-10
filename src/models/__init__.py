@@ -1,4 +1,4 @@
-"""Model zoo: DFCAN backbone, RCAN baseline, bicubic reference, and the config factory."""
+"""Model zoo: DFCAN/RCAN/NAFNet/SwinIR backbones, bicubic reference, and the config factory."""
 
 import inspect
 
@@ -6,19 +6,27 @@ import torch
 
 from src.models.bicubic import BicubicSR
 from src.models.dfcan import DFCAN
+from src.models.nafnet import NAFNet
 from src.models.rcan import RCAN
+from src.models.swinir import SwinIR
 
-__all__ = ["BicubicSR", "DFCAN", "RCAN", "build_model"]
+__all__ = ["BicubicSR", "DFCAN", "NAFNet", "RCAN", "SwinIR", "build_model"]
 
-_REGISTRY: dict[str, type[torch.nn.Module]] = {"dfcan": DFCAN, "rcan": RCAN, "bicubic": BicubicSR}
+_REGISTRY: dict[str, type[torch.nn.Module]] = {
+    "dfcan": DFCAN,
+    "rcan": RCAN,
+    "nafnet": NAFNet,
+    "swinir": SwinIR,
+    "bicubic": BicubicSR,
+}
 
 
 def build_model(model_cfg: dict) -> torch.nn.Module:
     """Instantiate a model from a config dict.
 
-    ``model_cfg["name"]`` selects "dfcan", "rcan", or "bicubic"; the remaining keys are forwarded
-    to the matching constructor (e.g. "gamma" for DFCAN, "reduction" for RCAN). An
-    unknown name raises ValueError; keys the constructor does not accept raise TypeError.
+    ``model_cfg["name"]`` selects "dfcan", "rcan", "nafnet", "swinir", or "bicubic"; the remaining
+    keys are forwarded to the matching constructor (e.g. "gamma" for DFCAN, "reduction" for RCAN).
+    An unknown name raises ValueError; keys the constructor does not accept raise TypeError.
     """
     cfg = dict(model_cfg)
     name = cfg.pop("name", None)

@@ -5,6 +5,45 @@ from __future__ import annotations
 import torch
 
 
+def _invert_view(sr: torch.Tensor, k: int, flip: bool) -> torch.Tensor:
+    """Undo the dihedral view (rot90 by ``k`` then optional hflip)."""
+    if flip:
+        sr = torch.flip(sr, dims=(-1,))
+    return torch.rot90(sr, -k % 4, dims=(-2, -1))
+
+
+@torch.no_grad()
+def predict_tiled_tta(
+    model: torch.nn.Module,
+    lr: torch.Tensor,
+    tile: int = 256,
+    overlap: int = 32,
+    scale: int = 2,
+    mode: str = "median",
+) -> torch.Tensor:
+    """Geometric self-ensemble over the 8 dihedral views; returns (1, 1, scale*H, scale*W).
+
+    Each view is tiled-inferred then mapped back to the original orientation and the
+    views are aggregated. ``mode="median"`` (default) is preferred for thin
+    structures since the mean blurs them. Only use this when the model is
+    approximately equivariant; it is inference-only.
+    """
+    if mode not in ("median", "mean"):
+        raise ValueError(f"tta mode must be 'median' or 'mean', got {mode!r}")
+    outputs = []
+    for k in range(4):
+        for flip in (False, True):
+            view = torch.rot90(lr, k, dims=(-2, -1))
+            if flip:
+                view = torch.flip(view, dims=(-1,))
+            sr = predict_tiled(model, view, tile=tile, overlap=overlap, scale=scale)
+            outputs.append(_invert_view(sr, k, flip))
+    stack = torch.stack(outputs, dim=0)
+    if mode == "mean":
+        return stack.mean(dim=0)
+    return stack.median(dim=0).values
+
+
 @torch.no_grad()
 def predict_tiled(
     model: torch.nn.Module,

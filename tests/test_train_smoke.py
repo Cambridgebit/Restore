@@ -99,13 +99,38 @@ def test_training_smoke(biosr_root, manifest, tmp_path):
     assert split_info["held_out"] == "F-actin"
 
 
-def test_morphology_ood_raises(biosr_root, manifest, tmp_path):
+def test_morphology_ood_smoke(biosr_root, manifest, tmp_path):
+    """morphology_ood=true adds a label-free synthetic domain; training still completes."""
     from train import run_training
 
     cfg = _make_cfg(biosr_root, tmp_path)
     cfg["augmentation"]["morphology_ood"] = True
-    with pytest.raises(NotImplementedError, match="morphology-OOD"):
-        run_training(cfg, run_dir=tmp_path / "run_ood")
+    cfg["augmentation"]["morphology_ood_samples"] = 8
+    summary = run_training(cfg, run_dir=tmp_path / "run_ood")
+    assert math.isfinite(summary["best_val_psnr"])
+    assert (tmp_path / "run_ood" / "results" / "test_metrics.json").is_file()
+
+
+def test_ema_and_structural_checkpoint_selection(biosr_root, manifest, tmp_path):
+    """EMA weights + structural (val_f1) checkpoint selection run end to end."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["training"]["ema"] = True
+    cfg["training"]["select_metric"] = "val_f1"
+    summary = run_training(cfg, run_dir=tmp_path / "run_ema")
+    assert math.isfinite(summary["best_val_psnr"])
+    assert summary["test"]["per_level"]["5"]["n"] == 2
+
+
+def test_sam_optimizer_smoke(biosr_root, manifest, tmp_path):
+    """optimizer=sam runs the two-step sharpness-aware update end to end."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["training"]["optimizer"] = "sam"
+    summary = run_training(cfg, run_dir=tmp_path / "run_sam")
+    assert math.isfinite(summary["best_val_psnr"])
 
 
 @pytest.mark.skipif(not _cuda_available(), reason="CUDA not available")
@@ -125,9 +150,10 @@ def test_run_validation_on_cuda(biosr_root, manifest, tmp_path):
     loader = DataLoader(val_ds, batch_size=2, shuffle=False)
     device = torch.device("cuda")
     model = torch.nn.UpsamplingBilinear2d(scale_factor=2).to(device)
-    val_psnr, val_ssim = _run_validation(model, loader, device, cfg["eval"]["ssim_window"])
+    val_psnr, val_ssim, val_f1 = _run_validation(model, loader, device, cfg["eval"]["ssim_window"])
     assert math.isfinite(val_psnr)
     assert math.isfinite(val_ssim)
+    assert math.isfinite(val_f1)
 
 
 def test_bicubic_eval_only_smoke(biosr_root, manifest, tmp_path):
@@ -190,7 +216,7 @@ def test_test_metrics_come_from_best_checkpoint(monkeypatch, biosr_root, manifes
     from train import run_training
 
     psnrs = iter([10.0, 9.0, 8.0])
-    monkeypatch.setattr(train_mod, "_run_validation", lambda *args, **kwargs: (next(psnrs), 0.5))
+    monkeypatch.setattr(train_mod, "_run_validation", lambda *args, **kwargs: (next(psnrs), 0.5, 0.5))
 
     captured = {}
     real_evaluate = train_mod.evaluate_split

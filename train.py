@@ -21,17 +21,20 @@ import numpy as np
 import tifffile
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader
 
 from src.data.biosr import BioSRDataset, BioSRSample, discover_samples, resolve_root
+from src.data.morphology import SyntheticMorphologyDataset
 from src.data.sampling import make_balanced_sampler
 from src.data.splits import Split, check_no_leakage, filter_samples, make_loso_split
 from src.losses import build_loss
 from src.metrics import frc_resolution, psnr, ssim, structural_precision_recall, zncc
 from src.models import build_model
 from src.utils.config import apply_overrides, load_config, save_config
-from src.utils.inference import predict_tiled
+from src.utils.ema import ModelEMA
+from src.utils.inference import predict_tiled, predict_tiled_tta
 from src.utils.run import append_jsonl, create_run_dir, load_checkpoint, save_checkpoint
+from src.utils.sam import SAM
 from src.utils.seed import seed_worker, set_seed
 from src.utils.tracking import WandbTracker
 
@@ -43,19 +46,24 @@ except ImportError:  # optional: progress bars degrade to plain iteration
 REQUIRED_SECTIONS = ("dataset", "model", "training", "loss", "augmentation", "eval")
 _RECORD_METRICS = ("psnr", "ssim", "zncc", "frc", "precision", "recall", "f1")
 _AGGREGATE_NAMES = {"precision": "structural_precision", "recall": "structural_recall", "f1": "structural_f1"}
+_SELECT_METRICS = ("val_psnr", "val_ssim", "val_f1")
+_MORPHOLOGY_FAMILIES = ("filament", "curve", "ring", "dot", "voronoi", "fractal")
 
 
 def validate_cfg(cfg: dict) -> None:
-    """Raise on missing sections or unimplemented features."""
+    """Raise on missing sections or invalid options."""
     missing = [section for section in REQUIRED_SECTIONS if section not in cfg]
     if missing:
         raise ValueError(f"config missing required sections: {', '.join(missing)}")
     if cfg["training"].get("val_every", 1) < 1:
         raise ValueError("training.val_every must be >= 1")
-    if cfg["augmentation"].get("morphology_ood", False):
-        raise NotImplementedError(
-            "morphology-OOD augmentation is reserved for a later ablation; "
-            "not implemented in this framework"
+    optimizer = cfg["training"].get("optimizer", "adam")
+    if optimizer not in ("adam", "sam"):
+        raise ValueError(f"training.optimizer must be 'adam' or 'sam', got {optimizer!r}")
+    select_metric = cfg["training"].get("select_metric", "val_psnr")
+    if select_metric not in _SELECT_METRICS:
+        raise ValueError(
+            f"training.select_metric must be one of {_SELECT_METRICS}, got {select_metric!r}"
         )
 
 
@@ -115,11 +123,15 @@ def _run_validation(
     loader: DataLoader,
     device: torch.device,
     ssim_window: int,
-) -> tuple[float, float]:
-    """Center-crop-patch validation; returns sample-weighted mean (psnr, ssim)."""
+    tolerance_px: int = 2,
+    edge_percentile: float = 99.0,
+) -> tuple[float, float, float]:
+    """Center-crop-patch validation; returns sample-weighted mean (psnr, ssim, f1)."""
+    was_training = model.training
     model.eval()
     psnr_sum = 0.0
     ssim_sum = 0.0
+    f1_sum = 0.0
     seen = 0
     for lr_img, gt in loader:
         sr = model(lr_img.to(device))
@@ -127,11 +139,15 @@ def _run_validation(
         batch = sr.shape[0]
         psnr_sum += psnr(sr, gt) * batch
         ssim_sum += ssim(sr, gt, window=ssim_window) * batch
+        f1_sum += structural_precision_recall(
+            sr, gt, tolerance_px=tolerance_px, percentile=edge_percentile
+        )["f1"] * batch
         seen += batch
-    model.train()
+    if was_training:
+        model.train()
     if seen == 0:
-        return float("nan"), float("nan")
-    return psnr_sum / seen, ssim_sum / seen
+        return float("nan"), float("nan"), float("nan")
+    return psnr_sum / seen, ssim_sum / seen, f1_sum / seen
 
 
 def evaluate_split(
@@ -144,6 +160,7 @@ def evaluate_split(
     """Tiled inference + metrics on split.test; returns aggregate_results() output."""
     model.eval()
     eval_cfg = cfg["eval"]
+    use_tta = bool(eval_cfg.get("tta", False))
     dataset = BioSRDataset(
         split.test,
         root=root,
@@ -156,13 +173,24 @@ def evaluate_split(
     for index, sample in enumerate(split.test):
         lr_img, gt = dataset[index]
         # dataset yields (1, H, W) per sample; tiled inference and metrics expect (N, 1, H, W)
-        sr = predict_tiled(
-            model,
-            lr_img.unsqueeze(0).to(device),
-            tile=eval_cfg["tile"],
-            overlap=eval_cfg["overlap"],
-            scale=cfg["dataset"]["scale"],
-        ).cpu()
+        lr_batch = lr_img.unsqueeze(0).to(device)
+        if use_tta:
+            sr = predict_tiled_tta(
+                model,
+                lr_batch,
+                tile=eval_cfg["tile"],
+                overlap=eval_cfg["overlap"],
+                scale=cfg["dataset"]["scale"],
+                mode=eval_cfg.get("tta_mode", "median"),
+            ).cpu()
+        else:
+            sr = predict_tiled(
+                model,
+                lr_batch,
+                tile=eval_cfg["tile"],
+                overlap=eval_cfg["overlap"],
+                scale=cfg["dataset"]["scale"],
+            ).cpu()
         gt = gt.unsqueeze(0)
         spr = structural_precision_recall(
             sr,
@@ -286,7 +314,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
 
     aug = cfg["augmentation"]
     intensity_range = aug.get("intensity_range")
-    train_ds = BioSRDataset(
+    train_ds: torch.utils.data.Dataset = BioSRDataset(
         split.train,
         root=root,
         patch_size=cfg["dataset"]["patch_size"],
@@ -300,6 +328,19 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         },
         normalization=cfg["dataset"]["normalization"],
     )
+    train_labels = [sample.structure for sample in split.train]
+    if aug.get("morphology_ood", False):
+        # Label-free domain randomization: synthetic curvilinear morphologies run
+        # through the same forward model and join as a fourth balanced "domain".
+        synth = SyntheticMorphologyDataset(
+            num_samples=int(aug.get("morphology_ood_samples", 2048)),
+            lr_size=cfg["dataset"]["patch_size"],
+            scale=cfg["dataset"]["scale"],
+            families=tuple(aug.get("morphology_ood_families") or _MORPHOLOGY_FAMILIES),
+            seed=cfg["training"]["seed"],
+        )
+        train_ds = ConcatDataset([train_ds, synth])
+        train_labels = train_labels + ["__synthetic__"] * len(synth)
     val_ds = BioSRDataset(
         split.val,
         root=root,
@@ -310,7 +351,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["training"]["batch_size"],
-        sampler=make_balanced_sampler([s.structure for s in split.train], seed=cfg["training"]["seed"]),
+        sampler=make_balanced_sampler(train_labels, seed=cfg["training"]["seed"]),
         shuffle=False,
         num_workers=cfg["training"]["num_workers"],
         worker_init_fn=seed_worker,
@@ -325,29 +366,45 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     )
 
     model = build_model(cfg["model"]).to(device)
-    loss_fn = build_loss(cfg["loss"]).to(device)
+    loss_fn = build_loss(cfg["loss"], scale=cfg["dataset"]["scale"]).to(device)
     trainable = [p for p in model.parameters() if p.requires_grad]
     if cfg["training"]["epochs"] > 0 and not trainable:
         raise ValueError("no trainable parameters; an epochs>0 run requires a learning-based model")
-    optimizer = (
-        torch.optim.Adam(
+    optimizer_kind = cfg["training"].get("optimizer", "adam")
+    if not trainable:
+        optimizer = None
+    elif optimizer_kind == "sam":
+        optimizer = SAM(
+            trainable,
+            torch.optim.Adam,
+            rho=cfg["training"].get("sam_rho", 0.05),
+            lr=cfg["training"]["learning_rate"],
+            weight_decay=cfg["training"]["weight_decay"],
+        )
+    else:
+        optimizer = torch.optim.Adam(
             trainable,
             lr=cfg["training"]["learning_rate"],
             weight_decay=cfg["training"]["weight_decay"],
         )
-        if trainable
+    grad_clip = cfg["training"].get("grad_clip")
+    ema = (
+        ModelEMA(model, decay=cfg["training"].get("ema_decay", 0.999))
+        if cfg["training"].get("ema", False) and trainable
         else None
     )
-    grad_clip = cfg["training"].get("grad_clip")
+    tracked_model = ema.module if ema is not None else model
+    select_metric = cfg["training"].get("select_metric", "val_psnr")
 
     best_epoch = 0
+    best_score = float("-inf")
     best_val_psnr = float("-inf")
     best_val_ssim = float("-inf")
     log_path = run_dir / "logs" / "train_log.jsonl"
     epochs_total = cfg["training"]["epochs"]
     vis_every = cfg["training"].get("vis_every", 30)
     if epochs_total > 0:
-        _visualize(model, split, root, cfg, device, 0, tracker, run_dir)  # baseline before training
+        _visualize(tracked_model, split, root, cfg, device, 0, tracker, run_dir)
 
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         model.train()
@@ -361,8 +418,9 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             else train_loader
         )
         for lr_img, gt in iterator:
-            sr = model(lr_img.to(device))
-            total, parts = loss_fn(sr, gt.to(device))
+            lr_in = lr_img.to(device)
+            gt_in = gt.to(device)
+            total, parts = loss_fn(model(lr_in), gt_in, lr_in)
             if not torch.isfinite(total):
                 # Skip non-finite losses instead of poisoning the weights; abort
                 # if non-finite batches dominate the epoch (real divergence).
@@ -372,11 +430,24 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
                     iterator.set_postfix(loss="nan-skipped")
                 continue
             total.backward()
-            if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
-            optimizer.zero_grad()
-            batch = lr_img.shape[0]
+            if optimizer_kind == "sam":
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.first_step(zero_grad=True)
+                total2, _ = loss_fn(model(lr_in), gt_in, lr_in)
+                if torch.isfinite(total2):
+                    total2.backward()
+                # On a non-finite second pass, second_step with zeroed grads just
+                # restores the original weights instead of poisoning them.
+                optimizer.second_step(zero_grad=True)
+            else:
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                optimizer.zero_grad()
+            if ema is not None:
+                ema.update(model)
+            batch = lr_in.shape[0]
             seen += batch
             total_sum += total.item() * batch
             for name, value in parts.items():
@@ -398,22 +469,40 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         record.update({f"train/{name}": part_sum / seen for name, part_sum in part_sums.items()})
         val_psnr: float | None = None
         val_ssim: float | None = None
+        val_f1: float | None = None
         if epoch % cfg["training"]["val_every"] == 0:
-            val_psnr, val_ssim = _run_validation(model, val_loader, device, cfg["eval"]["ssim_window"])
+            val_psnr, val_ssim, val_f1 = _run_validation(
+                tracked_model,
+                val_loader,
+                device,
+                cfg["eval"]["ssim_window"],
+                cfg["eval"]["tolerance_px"],
+                cfg["eval"]["edge_percentile"],
+            )
             record["val_psnr"] = val_psnr
             record["val_ssim"] = val_ssim
-            if val_psnr > best_val_psnr:
-                best_epoch, best_val_psnr, best_val_ssim = epoch, val_psnr, val_ssim
+            record["val_f1"] = val_f1
+            score = {"val_psnr": val_psnr, "val_ssim": val_ssim, "val_f1": val_f1}[select_metric]
+            if score > best_score:
+                best_epoch, best_score = epoch, score
+                best_val_psnr, best_val_ssim = val_psnr, val_ssim
                 save_checkpoint(
                     run_dir / "checkpoints" / "best.pt",
-                    model,
+                    tracked_model,
                     cfg,
                     epoch,
-                    {"val_psnr": val_psnr, "val_ssim": val_ssim},
+                    {
+                        "val_psnr": val_psnr,
+                        "val_ssim": val_ssim,
+                        "val_f1": val_f1,
+                        "select_metric": select_metric,
+                        "select_score": score,
+                    },
                 )
         else:
             record["val_psnr"] = None
             record["val_ssim"] = None
+            record["val_f1"] = None
         append_jsonl(log_path, record)
         tracker.log_metrics(record, step=epoch)
         progress = f"[epoch {epoch}/{epochs_total}] train_loss={record['train_loss']:.4f}"
@@ -421,10 +510,10 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             progress += f"  val_psnr={record['val_psnr']:.2f}  val_ssim={record['val_ssim']:.3f}"
         print(progress, flush=True)
         if vis_every > 0 and (epoch % vis_every == 0 or epoch == epochs_total):
-            _visualize(model, split, root, cfg, device, epoch, tracker, run_dir)
+            _visualize(tracked_model, split, root, cfg, device, epoch, tracker, run_dir)
         save_checkpoint(
             run_dir / "checkpoints" / "last.pt",
-            model,
+            tracked_model,
             cfg,
             epoch,
             {"val_psnr": val_psnr, "val_ssim": val_ssim},

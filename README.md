@@ -97,6 +97,21 @@ bash scripts/run_loso.sh ablation   # + gradient-off / + fourier (run core first
 bash scripts/run_loso.sh bicubic    # reference floor, eval only (epochs=0)
 ```
 
+Grid ablations — model x loss x training variants (isolated, resume-safe):
+
+```bash
+export BIOSR_ROOT=/abs/path/to/BioSR
+bash scripts/run_grid.sh losses     # dfcan x {base,dc,ffl,hess,gradvar}          (default)
+bash scripts/run_grid.sh models     # {dfcan,rcan,nafnet,swinir} x base loss/training
+bash scripts/run_grid.sh training   # dfcan x {base,ema,sam,ood,sel_f1}
+bash scripts/run_grid.sh full       # 4 x 5 x 5 = 100 combos x 4 folds (expensive)
+```
+
+Each combo writes to `runs_grid/<model>__<loss>__<train>/`; completed runs are
+skipped unless `SKIP_EXISTING=0`. Same GPU knobs as `run_loso.sh`: `GPU`
+(default 0, exported as `CUDA_VISIBLE_DEVICES`), a per-GPU flock lock (two
+grids cannot share a GPU), `KILL_STALE` (default 1), `PYTHON`, and `EXTRA`.
+
 Single runs:
 
 ```bash
