@@ -31,7 +31,7 @@ from src.metrics import frc_resolution, psnr, ssim, structural_precision_recall,
 from src.models import build_model
 from src.utils.config import apply_overrides, load_config, save_config
 from src.utils.inference import predict_tiled
-from src.utils.run import append_jsonl, create_run_dir, save_checkpoint
+from src.utils.run import append_jsonl, create_run_dir, load_checkpoint, save_checkpoint
 from src.utils.seed import seed_worker, set_seed
 from src.utils.tracking import WandbTracker
 
@@ -435,6 +435,24 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    # Report the held-out metrics of the BEST validation checkpoint, not the last
+    # epoch: a late-epoch divergence must not pollute the summary when best.pt is
+    # healthy (AGENT.md §15: best-model selection must be recorded). epochs=0 has
+    # no checkpoint, so the (untrained) model is evaluated as-is.
+    if epochs_total > 0:
+        best_path = run_dir / "checkpoints" / "best.pt"
+        if best_path.is_file():
+            state = load_checkpoint(best_path, map_location=device)
+            model.load_state_dict(state["model"], strict=True)
+            best_metrics = state.get("metrics") or {}
+            print(
+                f"[eval] best checkpoint (epoch {state.get('epoch')}, "
+                f"val_psnr={best_metrics.get('val_psnr')})",
+                flush=True,
+            )
+        else:
+            print("[eval] no best checkpoint found; evaluating the final model", flush=True)
 
     test_results = evaluate_split(model, split, root, cfg, device)
     results_path = run_dir / "results" / "test_metrics.json"

@@ -176,3 +176,41 @@ def test_wandb_missing_package_is_graceful(biosr_root, manifest, tmp_path):
     cfg["wandb"] = {"enabled": True, "entity": "unit", "project": "unit-test", "mode": "offline"}
     summary = run_training(cfg, run_dir=tmp_path / "run_wandb")
     assert math.isfinite(summary["best_val_psnr"])
+
+
+def test_test_metrics_come_from_best_checkpoint(monkeypatch, biosr_root, manifest, tmp_path):
+    """The held-out evaluation must load best.pt, not the last-epoch weights.
+
+    A forced decreasing validation curve makes epoch 1 the best (best.pt) and
+    epoch 3 the last (last.pt), so the two checkpoints differ.
+    """
+    import torch
+
+    import train as train_mod
+    from train import run_training
+
+    psnrs = iter([10.0, 9.0, 8.0])
+    monkeypatch.setattr(train_mod, "_run_validation", lambda *args, **kwargs: (next(psnrs), 0.5))
+
+    captured = {}
+    real_evaluate = train_mod.evaluate_split
+
+    def spy(model, split, root, cfg, device):
+        captured["state"] = {
+            key: value.detach().clone() for key, value in model.state_dict().items()
+        }
+        return real_evaluate(model, split, root, cfg, device)
+
+    monkeypatch.setattr(train_mod, "evaluate_split", spy)
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["training"]["epochs"] = 3
+    cfg["training"]["vis_every"] = 0
+    run_dir = tmp_path / "run_best"
+    run_training(cfg, run_dir=run_dir)
+
+    best = torch.load(run_dir / "checkpoints" / "best.pt", map_location="cpu", weights_only=False)
+    last = torch.load(run_dir / "checkpoints" / "last.pt", map_location="cpu", weights_only=False)
+    assert best["epoch"] == 1
+    assert any(not torch.equal(captured["state"][k], last["model"][k]) for k in last["model"])
+    assert all(torch.equal(captured["state"][k], best["model"][k]) for k in best["model"])
