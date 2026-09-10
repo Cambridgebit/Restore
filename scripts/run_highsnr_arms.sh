@@ -40,8 +40,17 @@ train_arm() { # <output_dir> [extra overrides...]
 migrate_eval() { # <run_dir>
   local run_dir="$1" results
   results="$run_dir/results"
+  # Only fully-completed trainings are eligible: results/test_metrics.json is
+  # written LAST inside train.py, so a missing file means the training run died
+  # before finishing (its best.pt is partial - do not eval it into the table).
+  if [[ ! -f "$results/test_metrics.json" ]]; then
+    echo "!!! SKIP eval $run_dir (training incomplete; rerun this script - the training arm will finish it)" >&2
+    FAILED+=("eval/$run_dir")
+    return 0
+  fi
   if [[ ! -f "$run_dir/checkpoints/best.pt" ]]; then
-    echo "=== SKIP eval $run_dir (no checkpoint) ==="
+    echo "!!! SKIP eval $run_dir (no checkpoint)" >&2
+    FAILED+=("eval/$run_dir")
     return 0
   fi
   if [[ -f "$results/test_metrics_all_levels.json" ]]; then
