@@ -47,6 +47,21 @@ PYEOF
   echo "=== cleanup: gpu cache cleared ==="
 }
 
+gpu_preflight() {
+  # Fail fast (before burning a startup cycle) when the GPU is mostly occupied
+  # by another process. Threshold overridable via MIN_GPU_FREE_MIB.
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  local free_mib
+  free_mib="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | head -1 | tr -d ' ')"
+  if (( free_mib < ${MIN_GPU_FREE_MIB:-6000} )); then
+    echo "!!! GPU has only ${free_mib} MiB free (< ${MIN_GPU_FREE_MIB:-6000}); another process is likely occupying it:" >&2
+    nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv >&2 || true
+    echo "    Free the GPU first (or set MIN_GPU_FREE_MIB=... lower) and rerun." >&2
+    return 1
+  fi
+  return 0
+}
+
 train() { # <config> <held_out> [overrides...]
   local config="$1" held="$2" model out_dir="runs" arg
   model="$(basename "$config" .yaml)"
@@ -60,6 +75,10 @@ train() { # <config> <held_out> [overrides...]
   fi
   echo ""
   echo "=== TRAIN $model | held-out: $held | extra: $* ==="
+  if ! gpu_preflight; then
+    FAILED+=("$model/$held (gpu occupied)")
+    return 0
+  fi
   if "$PY" train.py --config "$config" "dataset.held_out_structure=$held" "$@" "${EXTRA[@]}"; then
     echo "=== DONE  $model | $held ==="
   else
