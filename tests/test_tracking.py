@@ -44,3 +44,40 @@ def test_enabled_tracker_uses_offline_mode_when_available(tmp_path) -> None:
     finally:
         tracker.finish()
     assert tracker.run is None
+
+
+def test_enabled_tracker_init_failure_degrades(monkeypatch, tmp_path) -> None:
+    """wandb.init raising (network/auth flakiness) must disable tracking, never kill training."""
+
+    class ExplodingWandb:
+        @staticmethod
+        def init(*args, **kwargs):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(tracking, "wandb", ExplodingWandb)
+    tracker = tracking.WandbTracker({"wandb": {"enabled": True}}, run_dir=tmp_path)
+    assert tracker.enabled is False
+    assert tracker.run is None
+    tracker.log_metrics({"a": 1.0}, step=0)  # no-op, no crash
+    tracker.finish()
+
+
+def test_enabled_tracker_log_failure_degrades(monkeypatch, tmp_path) -> None:
+    """A failing run.log degrades tracking after one warning instead of crashing training."""
+
+    class FakeRun:
+        def log(self, *args, **kwargs):
+            raise RuntimeError("flaky upload")
+
+    class FakeWandb:
+        @staticmethod
+        def init(*args, **kwargs):
+            return FakeRun()
+
+    monkeypatch.setattr(tracking, "wandb", FakeWandb)
+    tracker = tracking.WandbTracker({"wandb": {"enabled": True}}, run_dir=tmp_path)
+    assert tracker.enabled is True
+    tracker.log_metrics({"a": 1.0}, step=0)  # first failure -> degrade
+    assert tracker.enabled is False
+    tracker.log_metrics({"b": 2.0}, step=1)  # now a no-op
+    tracker.finish()

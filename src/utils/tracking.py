@@ -33,6 +33,7 @@ class WandbTracker:
         wb_cfg = dict(cfg.get("wandb") or {})
         self.enabled = bool(wb_cfg.get("enabled", False))
         self.run = None
+        self._warned = False
         if not self.enabled:
             return
         if wandb is None:
@@ -43,28 +44,47 @@ class WandbTracker:
             )
             self.enabled = False
             return
-        self.run = wandb.init(
-            entity=wb_cfg.get("entity"),
-            project=wb_cfg.get("project", "Restore"),
-            name=name,
-            mode=wb_cfg.get("mode", "online"),
-            config=cfg,
-            dir=str(run_dir) if run_dir is not None else None,
-        )
+        try:
+            self.run = wandb.init(
+                entity=wb_cfg.get("entity"),
+                project=wb_cfg.get("project", "Restore"),
+                name=name,
+                mode=wb_cfg.get("mode", "online"),
+                config=cfg,
+                dir=str(run_dir) if run_dir is not None else None,
+            )
+        except Exception as exc:  # network/auth flakiness must never kill training
+            print(f"[wandb] init failed ({exc.__class__.__name__}: {exc}); continuing without tracking", flush=True)
+            self.enabled = False
+            self.run = None
+
+    def _warn_once(self, exc: Exception) -> None:
+        """Disable tracking after the first logging failure (training must survive)."""
+        if not self._warned:
+            self._warned = True
+            print(f"[wandb] logging failed ({exc.__class__.__name__}: {exc}); tracking disabled for this run", flush=True)
+            self.enabled = False
+            self.run = None
 
     def log_metrics(self, metrics: dict, step: int) -> None:
         """Log scalar metrics at `step` (None values are dropped)."""
         if self.run is None:
             return
         payload = {key: value for key, value in metrics.items() if value is not None}
-        self.run.log(payload, step=step)
+        try:
+            self.run.log(payload, step=step)
+        except Exception as exc:
+            self._warn_once(exc)
 
     def log_images(self, key: str, images: list[tuple[np.ndarray, str]], step: int) -> None:
         """Log image panels; `images` holds (H, W, C) float arrays in [0, 1] + captions."""
         if self.run is None or not images:
             return
         payload = {key: [wandb.Image(image, caption=caption) for image, caption in images]}
-        self.run.log(payload, step=step)
+        try:
+            self.run.log(payload, step=step)
+        except Exception as exc:
+            self._warn_once(exc)
 
     def update_summary(self, summary: dict) -> None:
         """Attach final metrics to the run summary (shown in the wandb table)."""

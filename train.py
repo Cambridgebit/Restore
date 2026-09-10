@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import statistics
 import sys
@@ -314,6 +315,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         num_workers=cfg["training"]["num_workers"],
         worker_init_fn=seed_worker,
         pin_memory=device.type == "cuda",
+        persistent_workers=cfg["training"]["num_workers"] > 0,
     )
     val_loader = DataLoader(
         val_ds,
@@ -413,6 +415,12 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             {"val_psnr": val_psnr, "val_ssim": val_ssim},
         )
 
+    # Free training state before the full-image evaluation pass (limit peak VRAM).
+    del optimizer
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     test_results = evaluate_split(model, split, root, cfg, device)
     results_path = run_dir / "results" / "test_metrics.json"
     results_path.parent.mkdir(parents=True, exist_ok=True)
@@ -425,6 +433,9 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         }
     )
     tracker.finish()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     print(
         f"[done] best_epoch={best_epoch} best_val_psnr={best_val_psnr:.3f} "
         f"test_overall_psnr={test_results['overall']['psnr']['mean']:.3f}",
