@@ -23,7 +23,7 @@ training:
   val_fraction: 0.1
   val_every: 1
   weight_decay: 0.0
-  grad_clip: null
+  grad_clip: 1.0            # global-norm clip; numerical safety for long unattended runs
   device: auto
   vis_every: 30             # periodic SR panels (0 = off); also runs once before training
 wandb:

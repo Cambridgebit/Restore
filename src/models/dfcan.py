@@ -41,11 +41,14 @@ class FCAB(nn.Module):
         feat = self.spatial_conv(x)
         spectrum = torch.fft.rfft2(feat)
         amplitude = spectrum.abs() ** self.gamma
-        phase = torch.atan2(spectrum.imag, spectrum.real)
+        # Unit phasor via ratio (mathematically identical to amp*exp(i*atan2)):
+        # atan2's backward at a zero spectral bin is NaN, so we never build the
+        # phase explicitly - zero bins contribute exactly zero, gradient-safe.
+        unit = spectrum / spectrum.abs().clamp_min(1e-12)
         pooled = amplitude.amax(dim=(-2, -1), keepdim=True)
         pooled = pooled / pooled.amax(dim=1, keepdim=True).clamp_min(1e-12)
         gate = self.gate(pooled)
-        feat = torch.fft.irfft2(torch.polar(amplitude * gate, phase), s=(height, width))
+        feat = torch.fft.irfft2(amplitude * gate * unit, s=(height, width))
         return x + self.out_conv(feat)
 
 

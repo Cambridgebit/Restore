@@ -354,6 +354,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         part_sums: dict[str, float] = defaultdict(float)
         total_sum = 0.0
         seen = 0
+        nan_batches = 0
         iterator = (
             tqdm(train_loader, desc=f"epoch {epoch}/{epochs_total}", leave=False, ncols=110)
             if tqdm is not None
@@ -362,6 +363,14 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         for lr_img, gt in iterator:
             sr = model(lr_img.to(device))
             total, parts = loss_fn(sr, gt.to(device))
+            if not torch.isfinite(total):
+                # Skip non-finite losses instead of poisoning the weights; abort
+                # if non-finite batches dominate the epoch (real divergence).
+                nan_batches += 1
+                optimizer.zero_grad()
+                if tqdm is not None:
+                    iterator.set_postfix(loss="nan-skipped")
+                continue
             total.backward()
             if grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -374,11 +383,17 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
                 part_sums[name] += value.item() * batch
             if tqdm is not None:
                 iterator.set_postfix(loss=f"{total.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.1e}")
+        if nan_batches > len(train_loader) // 2:
+            raise RuntimeError(
+                f"epoch {epoch}: {nan_batches}/{len(train_loader)} batches produced non-finite loss - "
+                "diverging training; lower the learning rate or enable/raise training.grad_clip"
+            )
 
         record: dict = {
             "epoch": epoch,
             "lr": optimizer.param_groups[0]["lr"],
             "train_loss": total_sum / seen,
+            "nan_skipped": nan_batches,
         }
         record.update({f"train/{name}": part_sum / seen for name, part_sum in part_sums.items()})
         val_psnr: float | None = None
