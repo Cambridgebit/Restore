@@ -17,7 +17,8 @@ See `AGENT.md` for the full research protocol and guardrails.
 │   ├── dfcan.yaml            # main backbone (fold 1 default)
 │   └── rcan.yaml             # baseline
 ├── docs/
-│   └── data_protocol.md      # BioSR discovery/pairing rules + BIOSR_ROOT
+│   ├── data_protocol.md      # BioSR discovery/pairing rules + BIOSR_ROOT
+│   └── experiments.md        # model/loss/training matrix + grid usage
 ├── src/
 │   ├── data/
 │   │   ├── biosr.py          # sample discovery, dataset, root resolution
