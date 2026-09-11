@@ -28,6 +28,15 @@ def test_forward_scalar_t_broadcast() -> None:
     assert model(x_t, torch.tensor(0.5), lr).shape == x_t.shape
 
 
+def test_forward_odd_size_pads_and_crops() -> None:
+    """Odd spatial sizes are padded internally and cropped back to the input size."""
+    torch.manual_seed(0)
+    model = ConditionalFlowSR(**KW)
+    x_t = torch.rand(1, 1, 18, 10)
+    lr = torch.rand(1, 1, 9, 5)
+    assert model(x_t, torch.tensor(0.5), lr).shape == (1, 1, 18, 10)
+
+
 def test_sample_output_is_2x_lr() -> None:
     """(2, 1, 16, 16) LR -> (2, 1, 32, 32) SR."""
     torch.manual_seed(0)

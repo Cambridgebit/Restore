@@ -7,9 +7,10 @@ dataset:
   patch_size: 32
   normalization: per_image_minmax
 model:
-  name: flow_matching         # conditional flow matching (velocity field + Euler ODE)
+  name: flow_matching         # conditional flow matching (U-Net velocity field + Euler ODE)
   nf: 64
-  num_blocks: 8
+  num_levels: 3
+  num_blocks: 2               # residual blocks per U-Net level
   time_embed_dim: 128
   scale: 2
   residual_prediction: true   # model the residual on top of bicubic U(LR)
