@@ -43,12 +43,12 @@ HELDS=(CCPs ER Microtubules F-actin)
 GRID_ROOT="runs_grid"
 
 # --- per-GPU single-instance + stale-process guard ---------------------------
-# Only one run_grid.sh may drive a given GPU: a second launch on the same GPU
-# refuses instead of stacking a parallel training run. Leftover train.py
-# processes on THIS GPU are terminated first (set KILL_STALE=0 to disable).
+# The lock is SHARED with run_loso.sh / run_mt.sh, so those suites are mutually
+# exclusive on a GPU. Leftover train.py processes on THIS GPU are terminated
+# first (set KILL_STALE=0 to disable).
 GPU="${GPU:-0}"
 KILL_STALE="${KILL_STALE:-1}"
-LOCK_FILE="${LOCK_FILE:-/tmp/restore_grid_gpu${GPU}.lock}"
+LOCK_FILE="${LOCK_FILE:-/tmp/restore_loso_gpu${GPU}.lock}"
 export CUDA_VISIBLE_DEVICES="$GPU"
 
 gpu_pids() {

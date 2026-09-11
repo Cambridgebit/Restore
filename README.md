@@ -111,8 +111,21 @@ bash scripts/run_grid.sh full       # models x losses x trainings (expensive)
 
 Each combo writes to `runs_grid/<model>__<loss>__<train>/`; completed runs are
 skipped unless `SKIP_EXISTING=0`. Same GPU knobs as `run_loso.sh`: `GPU`
-(default 0, exported as `CUDA_VISIBLE_DEVICES`), a per-GPU flock lock (two
-grids cannot share a GPU), `KILL_STALE` (default 1), `PYTHON`, and `EXTRA`.
+(default 0, exported as `CUDA_VISIBLE_DEVICES`), a per-GPU flock lock (shared by
+all suites, so only one training suite runs per GPU), `KILL_STALE` (default 1),
+`PYTHON`, and `EXTRA`.
+
+MT held-out comparison (strictly serial, reclaims VRAM/RAM between models):
+
+```bash
+bash scripts/run_mt.sh                        # all backbones, train CCPs+ER+F-actin, test Microtubules
+GPU=1 bash scripts/run_mt.sh                  # second GPU
+MODELS="dfcan swinir" bash scripts/run_mt.sh  # subset
+```
+
+Models run one at a time (bash waits for each `train.py` to exit); after every run
+the GPU cache is cleared and free VRAM is reported before the next model starts,
+so models never share the GPU.
 
 Single runs:
 

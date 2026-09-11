@@ -29,7 +29,7 @@ training:
   select_metric: val_psnr   # val_psnr | val_ssim | val_f1 (structural) checkpoint selection
   optimizer: adam           # adam | sam (sharpness-aware minimization)
   sam_rho: 0.05             # SAM neighborhood radius (only used when optimizer=sam)
-  ema: false                # exponential moving average of weights (evaluated model)
+  ema: true                 # exponential moving average of weights (evaluated model)
   ema_decay: 0.999
 wandb:
   enabled: true

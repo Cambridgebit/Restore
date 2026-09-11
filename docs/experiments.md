@@ -66,12 +66,12 @@ PY
 | objective（目标） | 回归 / flow-matching | 由 `model.name` 决定 | 训练循环 + 采样 |
 | `training.optimizer` | `adam` / `sam` | adam | 优化器（`sam_rho`：0.05） |
 | `training.select_metric` | `val_psnr` / `val_ssim` / `val_f1` | val_psnr | 最佳 checkpoint 选择 |
-| `training.ema` | false / true | false | 权重 EMA（`ema_decay`：0.999） |
+| `training.ema` | false / true | **true** | 权重 EMA（`ema_decay`：0.999） |
 | `eval.tta` | false / true | false | **推理时** 8 视角自集成（`tta_mode`：median/mean） |
 | `augmentation.morphology_ood` | false / true | false | **数据侧** 合成形态域 |
 | `training.flow_steps` / `flow_sigma` | int / float | 20 / 1.0 | 仅 flow 采样 |
 
-### 3.1 `training.ema` —— 权重的指数滑动平均
+### 3.1 `training.ema` —— 权重的指数滑动平均（默认已开启）
 
 保持一份模型的影子副本（`src/utils/ema.py`），参数按
 `ema = decay * ema + (1 - decay) * param` 更新，前期带升温：
@@ -117,6 +117,23 @@ buffer 直接复制（不做平均）。
 | `training` | dfcan × 5 个训练变体 | 20 |
 | `flow` | dfcan（回归）vs flow_matching | 8 |
 | `full` | 8 × 5 × 5 = 200 个组合 | 800 |
+
+### 4.1 `scripts/run_mt.sh` —— 固定留出 Microtubules 的串行对比
+
+在 **CCPs + ER + F-actin** 上训练、在**未见 Microtubules**（fold 3）上评测，**严格串行**：
+一次只启动一个 `train.py`，bash 等它退出后才跑下一个；每次结束后清理 GPU 缓存、回收内存，
+并打印剩余显存。每卡 flock 锁与 `run_loso.sh` / `run_grid.sh` **共用**，三套脚本在同一张卡上互斥；
+启动前 `KILL_STALE=1` 会清掉该卡上遗留的 `train.py`。
+
+```bash
+export BIOSR_ROOT=/abs/path/to/BioSR
+bash scripts/run_mt.sh                        # 全部骨干，GPU0，留出 Microtubules
+GPU=1 bash scripts/run_mt.sh                  # 第二张卡
+MODELS="dfcan swinir" bash scripts/run_mt.sh  # 只跑子集
+```
+
+环境变量：`GPU`、`HELD`（默认 Microtubules）、`MODELS`、`OUT_DIR`（默认 `runs_mt`）、
+`SKIP_EXISTING`、`KILL_STALE`、`PYTHON`、`EXTRA`、`MIN_GPU_FREE_MIB`。
 
 ## 5. 注意事项
 

@@ -29,7 +29,7 @@ training:
   select_metric: val_psnr
   optimizer: adam
   sam_rho: 0.05
-  ema: false
+  ema: true
   ema_decay: 0.999
 wandb:
   enabled: true
