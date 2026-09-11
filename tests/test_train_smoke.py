@@ -133,6 +133,27 @@ def test_sam_optimizer_smoke(biosr_root, manifest, tmp_path):
     assert math.isfinite(summary["best_val_psnr"])
 
 
+def test_flow_matching_smoke(biosr_root, manifest, tmp_path):
+    """Conditional flow matching trains (velocity regression) and samples for test metrics."""
+    from train import run_training
+
+    cfg = _make_cfg(biosr_root, tmp_path)
+    cfg["model"] = {
+        "name": "flow_matching",
+        "nf": 8,
+        "num_blocks": 1,
+        "time_embed_dim": 16,
+        "scale": 2,
+        "residual_prediction": True,
+    }
+    cfg["training"]["epochs"] = 1
+    cfg["training"]["flow_steps"] = 2
+    run_dir = tmp_path / "run_flow"
+    summary = run_training(cfg, run_dir=run_dir)
+    assert math.isfinite(summary["test"]["overall"]["psnr"]["mean"])
+    assert (run_dir / "results" / "test_metrics.json").is_file()
+
+
 @pytest.mark.skipif(not _cuda_available(), reason="CUDA not available")
 def test_run_validation_on_cuda(biosr_root, manifest, tmp_path):
     """Validation metrics must not mix devices: gt moves to the model's device."""

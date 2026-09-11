@@ -14,7 +14,7 @@ import json
 import statistics
 import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +30,7 @@ from src.data.splits import Split, check_no_leakage, filter_samples, make_loso_s
 from src.losses import build_loss
 from src.metrics import frc_resolution, psnr, ssim, structural_precision_recall, zncc
 from src.models import build_model
+from src.models.flow_matching import flow_velocity_target
 from src.utils.config import apply_overrides, load_config, save_config
 from src.utils.ema import ModelEMA
 from src.utils.inference import predict_tiled, predict_tiled_tta
@@ -125,8 +126,13 @@ def _run_validation(
     ssim_window: int,
     tolerance_px: int = 2,
     edge_percentile: float = 99.0,
+    predict_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[float, float, float]:
-    """Center-crop-patch validation; returns sample-weighted mean (psnr, ssim, f1)."""
+    """Center-crop-patch validation; returns sample-weighted mean (psnr, ssim, f1).
+
+    ``predict_fn`` (LR -> SR) overrides the default ``model(lr)`` for generative
+    models such as flow matching; regression backbones leave it None.
+    """
     was_training = model.training
     model.eval()
     psnr_sum = 0.0
@@ -134,8 +140,9 @@ def _run_validation(
     f1_sum = 0.0
     seen = 0
     for lr_img, gt in loader:
-        sr = model(lr_img.to(device))
+        lr_in = lr_img.to(device)
         gt = gt.to(device)
+        sr = predict_fn(lr_in) if predict_fn is not None else model(lr_in)
         batch = sr.shape[0]
         psnr_sum += psnr(sr, gt) * batch
         ssim_sum += ssim(sr, gt, window=ssim_window) * batch
@@ -150,6 +157,38 @@ def _run_validation(
     return psnr_sum / seen, ssim_sum / seen, f1_sum / seen
 
 
+def _is_flow(cfg: dict) -> bool:
+    """True when the configured model is the conditional flow-matching model."""
+    return str(cfg["model"]["name"]) == "flow_matching"
+
+
+def _make_predict_fn(
+    model: torch.nn.Module, cfg: dict, device: torch.device
+) -> Callable[[torch.Tensor], torch.Tensor] | None:
+    """Return a deterministic LR->SR predict function for flow matching, else None.
+
+    Flow sampling is stochastic, so a fixed per-shape noise (seeded from
+    ``training.seed``) is used to make validation/evaluation comparable across
+    epochs. Regression models return None and use the tiled forward pass instead.
+    """
+    if not _is_flow(cfg):
+        return None
+    scale = int(cfg["dataset"]["scale"])
+    steps = int(cfg["training"].get("flow_steps", 20))
+    sigma = float(cfg["training"].get("flow_sigma", 1.0))
+    seed = int(cfg["training"].get("seed", 42))
+
+    def predict(lr_batch: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = lr_batch.shape
+        generator = torch.Generator(device=device).manual_seed(seed)
+        noise = sigma * torch.randn(
+            (b, c, h * scale, w * scale), generator=generator, device=device, dtype=lr_batch.dtype
+        )
+        return model.sample(lr_batch, steps=steps, sigma=sigma, noise=noise)
+
+    return predict
+
+
 def evaluate_split(
     model: torch.nn.Module,
     split: Split,
@@ -161,6 +200,7 @@ def evaluate_split(
     model.eval()
     eval_cfg = cfg["eval"]
     use_tta = bool(eval_cfg.get("tta", False))
+    predict_fn = _make_predict_fn(model, cfg, device)
     dataset = BioSRDataset(
         split.test,
         root=root,
@@ -174,7 +214,9 @@ def evaluate_split(
         lr_img, gt = dataset[index]
         # dataset yields (1, H, W) per sample; tiled inference and metrics expect (N, 1, H, W)
         lr_batch = lr_img.unsqueeze(0).to(device)
-        if use_tta:
+        if predict_fn is not None:
+            sr = predict_fn(lr_batch).cpu()
+        elif use_tta:
             sr = predict_tiled_tta(
                 model,
                 lr_batch,
@@ -241,6 +283,7 @@ def _visualize(
     epoch: int,
     tracker: WandbTracker,
     run_dir: Path,
+    predict_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> None:
     """Tiled inference on fixed samples; saves (LR-up | SR | GT) TIFFs and wandb panels.
 
@@ -257,13 +300,17 @@ def _visualize(
         for tag, sample in _select_vis_samples(split):
             dataset = BioSRDataset([sample], root=root)
             lr_img, gt_img = dataset[0]
-            sr = predict_tiled(
-                model,
-                lr_img.unsqueeze(0).to(device),
-                tile=eval_cfg["tile"],
-                overlap=eval_cfg["overlap"],
-                scale=cfg["dataset"]["scale"],
-            ).cpu()
+            lr_batch = lr_img.unsqueeze(0).to(device)
+            if predict_fn is not None:
+                sr = predict_fn(lr_batch).cpu()
+            else:
+                sr = predict_tiled(
+                    model,
+                    lr_batch,
+                    tile=eval_cfg["tile"],
+                    overlap=eval_cfg["overlap"],
+                    scale=cfg["dataset"]["scale"],
+                ).cpu()
             lr_up = F.interpolate(
                 lr_img.unsqueeze(0), size=sr.shape[-2:], mode="bicubic", align_corners=False, antialias=True
             )
@@ -367,6 +414,29 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
 
     model = build_model(cfg["model"]).to(device)
     loss_fn = build_loss(cfg["loss"], scale=cfg["dataset"]["scale"]).to(device)
+    is_flow = _is_flow(cfg)
+    flow_scale = int(cfg["dataset"]["scale"])
+    flow_sigma = float(cfg["training"].get("flow_sigma", 1.0))
+    flow_residual = bool(getattr(model, "residual_prediction", True))
+    flow_eps = float(cfg["loss"].get("charbonnier_eps", 1e-3))
+
+    def compute_loss(lr_in: torch.Tensor, gt_in: torch.Tensor):
+        """Return (total, parts) for the configured objective (regression or flow)."""
+        if not is_flow:
+            return loss_fn(model(lr_in), gt_in, lr_in)
+        # Conditional flow matching: regress the constant velocity x1 - x0.
+        cond = F.interpolate(
+            lr_in, scale_factor=flow_scale, mode="bicubic", align_corners=False, antialias=True
+        )
+        noise = flow_sigma * torch.randn_like(cond)
+        t = torch.rand(cond.shape[0], device=cond.device, dtype=cond.dtype)
+        x_t, velocity_target = flow_velocity_target(
+            gt_in, lr_in, noise, t, scale=flow_scale, residual_prediction=flow_residual
+        )
+        diff = model(x_t, t, lr_in) - velocity_target
+        total = torch.sqrt(diff * diff + flow_eps * flow_eps).mean()
+        return total, {"flow": total.detach(), "total": total}
+
     trainable = [p for p in model.parameters() if p.requires_grad]
     if cfg["training"]["epochs"] > 0 and not trainable:
         raise ValueError("no trainable parameters; an epochs>0 run requires a learning-based model")
@@ -394,6 +464,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         else None
     )
     tracked_model = ema.module if ema is not None else model
+    predict_fn = _make_predict_fn(tracked_model, cfg, device)
     select_metric = cfg["training"].get("select_metric", "val_psnr")
 
     best_epoch = 0
@@ -404,7 +475,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
     epochs_total = cfg["training"]["epochs"]
     vis_every = cfg["training"].get("vis_every", 30)
     if epochs_total > 0:
-        _visualize(tracked_model, split, root, cfg, device, 0, tracker, run_dir)
+        _visualize(tracked_model, split, root, cfg, device, 0, tracker, run_dir, predict_fn=predict_fn)
 
     for epoch in range(1, cfg["training"]["epochs"] + 1):
         model.train()
@@ -420,7 +491,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
         for lr_img, gt in iterator:
             lr_in = lr_img.to(device)
             gt_in = gt.to(device)
-            total, parts = loss_fn(model(lr_in), gt_in, lr_in)
+            total, parts = compute_loss(lr_in, gt_in)
             if not torch.isfinite(total):
                 # Skip non-finite losses instead of poisoning the weights; abort
                 # if non-finite batches dominate the epoch (real divergence).
@@ -434,7 +505,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
                 if grad_clip is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.first_step(zero_grad=True)
-                total2, _ = loss_fn(model(lr_in), gt_in, lr_in)
+                total2, _ = compute_loss(lr_in, gt_in)
                 if torch.isfinite(total2):
                     total2.backward()
                 # On a non-finite second pass, second_step with zeroed grads just
@@ -478,6 +549,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
                 cfg["eval"]["ssim_window"],
                 cfg["eval"]["tolerance_px"],
                 cfg["eval"]["edge_percentile"],
+                predict_fn=predict_fn,
             )
             record["val_psnr"] = val_psnr
             record["val_ssim"] = val_ssim
@@ -510,7 +582,7 @@ def run_training(cfg: dict, run_dir: Path | None = None) -> dict:
             progress += f"  val_psnr={record['val_psnr']:.2f}  val_ssim={record['val_ssim']:.3f}"
         print(progress, flush=True)
         if vis_every > 0 and (epoch % vis_every == 0 or epoch == epochs_total):
-            _visualize(tracked_model, split, root, cfg, device, epoch, tracker, run_dir)
+            _visualize(tracked_model, split, root, cfg, device, epoch, tracker, run_dir, predict_fn=predict_fn)
         save_checkpoint(
             run_dir / "checkpoints" / "last.pt",
             tracked_model,

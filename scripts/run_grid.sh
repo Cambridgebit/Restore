@@ -10,10 +10,11 @@
 #
 # Usage:
 #   export BIOSR_ROOT=/abs/path/to/BioSR
-#   bash scripts/run_grid.sh models     # {dfcan,rcan,nafnet,swinir} x base loss/training
+#   bash scripts/run_grid.sh models     # {dfcan,rcan,nafnet,swinir,mambair,wavemixsr,restormer,flow_matching} x base
 #   bash scripts/run_grid.sh losses     # dfcan x {base,dc,ffl,hess,gradvar}     (default)
 #   bash scripts/run_grid.sh training   # dfcan x {base,ema,sam,ood,sel_f1}
-#   bash scripts/run_grid.sh full       # full 4 x 5 x 5 cross-product (100 combos x 4 folds)
+#   bash scripts/run_grid.sh flow       # dfcan (regression) vs flow_matching, base loss/training
+#   bash scripts/run_grid.sh full       # full cross-product (models x losses x trainings)
 #
 # Env knobs (same as run_loso.sh):
 #   BIOSR_ROOT=/abs/path/to/BioSR    required data root
@@ -121,7 +122,7 @@ gpu_preflight() {
 
 # --- grid axes ----------------------------------------------------------------
 # Model axis: one base config per model; model-specific keys never cross configs.
-MODELS=(dfcan rcan nafnet swinir)
+MODELS=(dfcan rcan nafnet swinir mambair wavemixsr restormer flow_matching)
 # Loss axis: overrides on the base config (valid keys in build_loss).
 LOSSES=(base dc ffl hess gradvar)
 # Training axis: overrides (valid keys in train.py).
@@ -129,10 +130,14 @@ TRAININGS=(base ema sam ood sel_f1)
 
 model_config() {
   case "$1" in
-    dfcan)  echo "configs/dfcan.yaml" ;;
-    rcan)   echo "configs/rcan.yaml" ;;
-    nafnet) echo "configs/nafnet.yaml" ;;
-    swinir) echo "configs/swinir.yaml" ;;
+    dfcan)         echo "configs/dfcan.yaml" ;;
+    rcan)          echo "configs/rcan.yaml" ;;
+    nafnet)        echo "configs/nafnet.yaml" ;;
+    swinir)        echo "configs/swinir.yaml" ;;
+    mambair)       echo "configs/mambair.yaml" ;;
+    wavemixsr)     echo "configs/wavemixsr.yaml" ;;
+    restormer)     echo "configs/restormer.yaml" ;;
+    flow_matching) echo "configs/flowmatching.yaml" ;;
     *) echo "unknown model: $1" >&2; exit 1 ;;
   esac
 }
@@ -171,6 +176,11 @@ case "$MODE" in
   training)
     for t in "${TRAININGS[@]}"; do COMBOS+=("dfcan:base:$t"); done
     ;;
+  flow)
+    # regression vs generative on the same protocol
+    COMBOS+=("dfcan:base:base")
+    COMBOS+=("flow_matching:base:base")
+    ;;
   full)
     for m in "${MODELS[@]}"; do
       for l in "${LOSSES[@]}"; do
@@ -179,7 +189,7 @@ case "$MODE" in
     done
     ;;
   *)
-    echo "unknown mode: $MODE (use models | losses | training | full)" >&2
+    echo "unknown mode: $MODE (use models | losses | training | flow | full)" >&2
     exit 1
     ;;
 esac

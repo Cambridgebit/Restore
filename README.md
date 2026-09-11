@@ -102,9 +102,10 @@ Grid ablations — model x loss x training variants (isolated, resume-safe):
 ```bash
 export BIOSR_ROOT=/abs/path/to/BioSR
 bash scripts/run_grid.sh losses     # dfcan x {base,dc,ffl,hess,gradvar}          (default)
-bash scripts/run_grid.sh models     # {dfcan,rcan,nafnet,swinir} x base loss/training
+bash scripts/run_grid.sh models     # {dfcan,rcan,nafnet,swinir,mambair,wavemixsr,restormer,flow_matching} x base
 bash scripts/run_grid.sh training   # dfcan x {base,ema,sam,ood,sel_f1}
-bash scripts/run_grid.sh full       # 4 x 5 x 5 = 100 combos x 4 folds (expensive)
+bash scripts/run_grid.sh flow       # regression (dfcan) vs flow_matching, base loss/training
+bash scripts/run_grid.sh full       # models x losses x trainings (expensive)
 ```
 
 Each combo writes to `runs_grid/<model>__<loss>__<train>/`; completed runs are
@@ -129,7 +130,8 @@ Each run writes to `<output_dir>/<timestamp>_<model>_<held_out>/`:
 `config.yaml` (with resolved root), `split.json`, `logs/train_log.jsonl`
 (epoch, lr, train loss + unweighted parts, val PSNR/SSIM),
 `checkpoints/best.pt` + `checkpoints/last.pt`, and
-`results/test_metrics.json`. Best model = highest validation PSNR.
+`results/test_metrics.json`. Best model = highest `training.select_metric`
+(default validation PSNR; `val_f1` selects on structural F1).
 
 ## Evaluation
 
@@ -148,11 +150,11 @@ precision/recall/F1 — aggregated per signal level and overall.
 | Section       | Keys                                                                 |
 |---------------|----------------------------------------------------------------------|
 | `dataset`     | `root`, `scale`, `structures`, `held_out_structure`, `signal_levels`, `patch_size`, `normalization` |
-| `model`       | `name` (`dfcan`/`rcan`), `nf`, `num_groups`, `num_blocks`, `reduction` (RCAN), `gamma` (DFCAN), `scale`, `residual_prediction` |
-| `training`    | `seed`, `batch_size`, `learning_rate`, `epochs`, `num_workers`, `val_fraction`, `val_every`, `weight_decay`, `grad_clip`, `device` |
-| `loss`        | `charbonnier`, `ssim`, `gradient`, `fourier` (weights), `charbonnier_eps`, `ssim_window` |
-| `augmentation`| `hflip`, `vflip`, `rot90`, `intensity_range`, `noise_max_sigma`, `morphology_ood` |
-| `eval`        | `tile`, `overlap`, `edge_percentile`, `tolerance_px`, `frc_threshold`, `ssim_window` |
+| `model`       | `name` (`dfcan`/`rcan`/`nafnet`/`swinir`/`mambair`/`wavemixsr`/`restormer`/`flow_matching`/`bicubic`) + backbone-specific keys, `scale`, `residual_prediction` |
+| `training`    | `seed`, `batch_size`, `learning_rate`, `epochs`, `num_workers`, `val_fraction`, `val_every`, `weight_decay`, `grad_clip`, `device`, `vis_every`, `select_metric` (`val_psnr`/`val_ssim`/`val_f1`), `optimizer` (`adam`/`sam`), `sam_rho`, `ema`, `ema_decay`, `flow_steps`, `flow_sigma` |
+| `loss`        | `charbonnier`, `ssim`, `gradient`, `fourier`, `data_consistency`, `residual`, `focal_frequency`, `gradient_variance`, `hessian` (weights), `charbonnier_eps`, `ssim_window` |
+| `augmentation`| `hflip`, `vflip`, `rot90`, `intensity_range`, `noise_max_sigma`, `morphology_ood`, `morphology_ood_samples`, `morphology_ood_families` |
+| `eval`        | `tile`, `overlap`, `edge_percentile`, `tolerance_px`, `frc_threshold`, `ssim_window`, `tta`, `tta_mode` |
 | top level     | `output_dir` |
 
 All experiment parameters live in configs / CLI `key=value` overrides — nothing

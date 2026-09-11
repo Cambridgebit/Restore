@@ -1,0 +1,70 @@
+dataset:
+  root: null                # null -> $BIOSR_ROOT -> protocol default (resolved in code)
+  scale: 2
+  structures: [CCPs, ER, Microtubules, F-actin]
+  held_out_structure: CCPs
+  signal_levels: all
+  patch_size: 32
+  normalization: per_image_minmax
+model:
+  name: mambair
+  embed_dim: 48
+  depths: [4, 4, 4, 4]
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  scale: 2
+  residual_prediction: true
+training:
+  seed: 42
+  batch_size: 128
+  learning_rate: 1.0e-4
+  epochs: 300
+  num_workers: 4
+  val_fraction: 0.1
+  val_every: 1
+  weight_decay: 0.0
+  grad_clip: 1.0
+  device: auto
+  vis_every: 30
+  select_metric: val_psnr
+  optimizer: adam
+  sam_rho: 0.05
+  ema: false
+  ema_decay: 0.999
+wandb:
+  enabled: true
+  entity: 2991837391-beihang-university
+  project: Restore
+  mode: online
+loss:
+  charbonnier: 1.0
+  ssim: 0.1
+  gradient: 0.1
+  fourier: 0.0
+  data_consistency: 0.0
+  residual: 0.0
+  focal_frequency: 0.0
+  gradient_variance: 0.0
+  hessian: 0.0
+  charbonnier_eps: 1.0e-3
+  ssim_window: 11
+augmentation:
+  hflip: true
+  vflip: true
+  rot90: true
+  intensity_range: [0.9, 1.1]
+  noise_max_sigma: 0.0
+  morphology_ood: false
+  morphology_ood_samples: 2048
+  morphology_ood_families: [filament, curve, ring, dot, voronoi, fractal]
+eval:
+  tile: 256
+  overlap: 32
+  edge_percentile: 99.0
+  tolerance_px: 2
+  frc_threshold: 0.14285714285714285
+  ssim_window: 11
+  tta: false
+  tta_mode: median
+output_dir: runs

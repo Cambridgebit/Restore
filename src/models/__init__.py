@@ -1,4 +1,4 @@
-"""Model zoo: DFCAN/RCAN/NAFNet/SwinIR backbones, bicubic reference, and the config factory."""
+"""Model zoo: regression backbones, a conditional flow-matching model, and the config factory."""
 
 import inspect
 
@@ -6,17 +6,36 @@ import torch
 
 from src.models.bicubic import BicubicSR
 from src.models.dfcan import DFCAN
+from src.models.flow_matching import ConditionalFlowSR
+from src.models.mambair import MambaIR
 from src.models.nafnet import NAFNet
 from src.models.rcan import RCAN
+from src.models.restormer import Restormer
 from src.models.swinir import SwinIR
+from src.models.wavemixsr import WaveMixSR
 
-__all__ = ["BicubicSR", "DFCAN", "NAFNet", "RCAN", "SwinIR", "build_model"]
+__all__ = [
+    "BicubicSR",
+    "ConditionalFlowSR",
+    "DFCAN",
+    "MambaIR",
+    "NAFNet",
+    "RCAN",
+    "Restormer",
+    "SwinIR",
+    "WaveMixSR",
+    "build_model",
+]
 
 _REGISTRY: dict[str, type[torch.nn.Module]] = {
     "dfcan": DFCAN,
     "rcan": RCAN,
     "nafnet": NAFNet,
     "swinir": SwinIR,
+    "mambair": MambaIR,
+    "wavemixsr": WaveMixSR,
+    "restormer": Restormer,
+    "flow_matching": ConditionalFlowSR,
     "bicubic": BicubicSR,
 }
 
@@ -24,8 +43,9 @@ _REGISTRY: dict[str, type[torch.nn.Module]] = {
 def build_model(model_cfg: dict) -> torch.nn.Module:
     """Instantiate a model from a config dict.
 
-    ``model_cfg["name"]`` selects "dfcan", "rcan", "nafnet", "swinir", or "bicubic"; the remaining
-    keys are forwarded to the matching constructor (e.g. "gamma" for DFCAN, "reduction" for RCAN).
+    ``model_cfg["name"]`` selects one of the registered backbones (dfcan, rcan, nafnet,
+    swinir, mambair, wavemixsr, restormer, flow_matching, bicubic); the remaining keys are
+    forwarded to the matching constructor (e.g. "gamma" for DFCAN, "reduction" for RCAN).
     An unknown name raises ValueError; keys the constructor does not accept raise TypeError.
     """
     cfg = dict(model_cfg)
