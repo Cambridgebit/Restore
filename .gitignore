@@ -12,3 +12,4 @@ runs/
 
 # Environments
 .venv/
+.omo/
